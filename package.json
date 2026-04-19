@@ -1,0 +1,19 @@
+{
+  "name": "dataspace-client-sdk-node-ts",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Node.js SDK skeleton for GW/UNID DIDComm plain batch + async polling flows",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "type-check": "tsc -p tsconfig.json --noEmit"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "devDependencies": {
+    "typescript": "^5.1.6"
+  }
+}
