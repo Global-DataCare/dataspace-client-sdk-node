@@ -210,6 +210,14 @@ export class DataspaceNodeClient {
     return this.v1Path(ctx, 'individual', format, 'Task', '_logs');
   }
 
+  public conversionUploadPath(ctx: RouteContext, softwareId: string, sourceFormat: string): string {
+    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/conversion/${encode(softwareId)}/${encode(sourceFormat)}/_upload`;
+  }
+
+  public conversionUploadPollPath(ctx: RouteContext, softwareId: string, sourceFormat: string): string {
+    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/conversion/${encode(softwareId)}/${encode(sourceFormat)}/_upload-response`;
+  }
+
   // ---- Generic batch API --------------------------------------------------
 
   public async submitBatch(path: string, payload: unknown): Promise<SubmitResponse> {
@@ -231,6 +239,53 @@ export class DataspaceNodeClient {
       location: response.headers.get('location') ?? undefined,
       body,
     };
+  }
+
+  public async postFormData(path: string, formData: FormData): Promise<SubmitResponse> {
+    const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+    const headers: Record<string, string> = {
+      ...this.defaultHeaders,
+      Accept: 'application/json, application/didcomm-plaintext+json, application/x-www-form-urlencoded, */*',
+    };
+
+    if (this.bearerToken) {
+      headers.Authorization = `Bearer ${this.bearerToken}`;
+    }
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers,
+      body: formData,
+    });
+
+    const body = await this.parseResponseBody(response);
+    return {
+      status: response.status,
+      location: response.headers.get('location') ?? undefined,
+      body,
+    };
+  }
+
+  public async uploadConversionFile(params: {
+    path: string;
+    fileName: string;
+    fileContent: Blob | Buffer | Uint8Array | ArrayBuffer;
+    fileFieldName?: string;
+    fields?: Record<string, string>;
+  }): Promise<SubmitResponse> {
+    const form = new FormData();
+    const fileFieldName = params.fileFieldName ?? 'file';
+    const content =
+      params.fileContent instanceof Blob
+        ? params.fileContent
+        : new Blob([params.fileContent as BlobPart]);
+    form.append(fileFieldName, content, params.fileName);
+
+    for (const [key, value] of Object.entries(params.fields ?? {})) {
+      form.append(key, value);
+    }
+
+    return this.postFormData(params.path, form);
   }
 
   public async pollBatchResponse(path: string, request: AsyncPollRequest): Promise<{ status: number; body: unknown }> {

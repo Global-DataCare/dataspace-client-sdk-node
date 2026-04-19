@@ -83,10 +83,35 @@ This avoids hardcoding curl scripts per endpoint.
 - Use this SDK for consumer-style E2E tests and external Node.js service integrations.
 - If individual onboarding moves to a separate service, telephony tests should consume that service and only use GW/UHC for reminders/calls.
 
-## DataConversion / Excel note
-- Excel attachment upload/preconversion ingestion (as used in `dataspace-client-sdk-py`) is not implemented in this SDK skeleton yet.
-- Current gateway-side coverage here focuses on documented GW/UNID HTTP routes.
-- Next step: add multipart/file adapters that call DataConversion API endpoints and then chain ingestion into GW `digitaltwin`/`individual` flows.
+## DataConversion / Excel
+
+This SDK now includes conversion helpers:
+- `conversionUploadPath(ctx, softwareId, sourceFormat)`
+- `conversionUploadPollPath(ctx, softwareId, sourceFormat)`
+- `uploadConversionFile({ path, fileName, fileContent, fields })`
+
+Example:
+- `examples/conversion-upload.mjs`
+
+Run:
+```bash
+cd sdk/dataspace-client-sdk-node-ts
+npm run build
+BASE_URL="http://localhost:3000" \
+AUTH_BEARER="demo-token" \
+TENANT_ID="acme" \
+JURISDICTION="ES" \
+SECTOR="animal-care" \
+SOFTWARE_ID="excel-adapter" \
+SOURCE_FORMAT="xlsx" \
+SOURCE_FILE="/absolute/path/to/input.xlsx" \
+node examples/conversion-upload.mjs
+```
+
+Notes:
+- Exact multipart field names may vary by DataConversion deployment.
+- If your conversion API is synchronous, polling is optional.
+- If it is async, provide/resolve `thid` and poll `.../_upload-response`.
 
 ## Next planned additions
 - Secure envelope mode (`application/x-www-form-urlencoded`, request/response JWE).
