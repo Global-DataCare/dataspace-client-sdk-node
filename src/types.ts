@@ -18,6 +18,24 @@ export type RouteContext = {
   sector: string;
 };
 
+export type V1Section = 'registry' | 'entity' | 'identity' | 'individual' | 'digitaltwin' | string;
+
+export type V1Action =
+  | '_batch'
+  | '_batch-response'
+  | '_activate'
+  | '_activate-response'
+  | '_dcr'
+  | '_dcr-response'
+  | '_exchange'
+  | '_exchange-response'
+  | '_issue'
+  | 'token'
+  | 'token-response'
+  | '_custom'
+  | '_custom-response'
+  | string;
+
 export type HostRouteContext = {
   jurisdiction: string;
   sector: string;

@@ -7,6 +7,8 @@ import type {
   RouteContext,
   SubmitAndPollResult,
   SubmitResponse,
+  V1Action,
+  V1Section,
 } from './types.js';
 
 function trimTrailingSlash(value: string): string {
@@ -30,20 +32,46 @@ export class DataspaceNodeClient {
 
   // ---- Path helpers -------------------------------------------------------
 
+  public v1Path(
+    ctx: RouteContext,
+    section: V1Section,
+    format: string,
+    resourceType: string,
+    action: V1Action,
+  ): string {
+    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/${encode(section)}/${encode(format)}/${encode(resourceType)}/${encode(action)}`;
+  }
+
+  public hostRegistryPath(
+    ctx: HostRouteContext,
+    resourceType: string,
+    action: V1Action,
+  ): string {
+    return `/host/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/registry/org.schema/${encode(resourceType)}/${encode(action)}`;
+  }
+
   public hostRegistryOrganizationBatchPath(ctx: HostRouteContext): string {
-    return `/host/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/registry/org.schema/Organization/_batch`;
+    return this.hostRegistryPath(ctx, 'Organization', '_batch');
   }
 
   public hostRegistryOrganizationPollPath(ctx: HostRouteContext): string {
-    return `/host/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/registry/org.schema/Organization/_batch-response`;
+    return this.hostRegistryPath(ctx, 'Organization', '_batch-response');
+  }
+
+  public hostRegistryOrganizationActivatePath(ctx: HostRouteContext): string {
+    return this.hostRegistryPath(ctx, 'Organization', '_activate');
+  }
+
+  public hostRegistryOrganizationActivatePollPath(ctx: HostRouteContext): string {
+    return this.hostRegistryPath(ctx, 'Organization', '_activate-response');
   }
 
   public hostRegistryOrderBatchPath(ctx: HostRouteContext): string {
-    return `/host/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/registry/org.schema/Order/_batch`;
+    return this.hostRegistryPath(ctx, 'Order', '_batch');
   }
 
   public hostRegistryOrderPollPath(ctx: HostRouteContext): string {
-    return `/host/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/registry/org.schema/Order/_batch-response`;
+    return this.hostRegistryPath(ctx, 'Order', '_batch-response');
   }
 
   public individualFamilyOrganizationBatchPath(ctx: RouteContext): string {
@@ -87,17 +115,105 @@ export class DataspaceNodeClient {
   }
 
   public individualTaskBatchPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/Task/_batch`;
+    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.api', 'Task', '_batch');
   }
 
   public individualTaskPollPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/Task/_batch-response`;
+    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.api', 'Task', '_batch-response');
+  }
+
+  public employeeBatchPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'entity', 'org.schema', 'Employee', '_batch');
+  }
+
+  public employeePollPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'entity', 'org.schema', 'Employee', '_batch-response');
+  }
+
+  public individualLegacyPersonBatchPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'individual', 'org.schema', 'Person', '_batch');
+  }
+
+  public individualConsentR4BatchPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Consent', '_batch');
+  }
+
+  public individualConsentR4PollPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Consent', '_batch-response');
+  }
+
+  public individualCompositionR4BatchPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Composition', '_batch');
+  }
+
+  public individualCompositionR4PollPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Composition', '_batch-response');
+  }
+
+  public digitalTwinCompositionApiBatchPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.api', 'Composition', '_batch');
+  }
+
+  public digitalTwinCompositionApiPollPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.api', 'Composition', '_batch-response');
+  }
+
+  public digitalTwinCompositionR4BatchPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.r4', 'Composition', '_batch');
+  }
+
+  public digitalTwinCompositionR4PollPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.r4', 'Composition', '_batch-response');
+  }
+
+  public identityDeviceDcrPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'identity', 'openid', 'Device', '_dcr');
+  }
+
+  public identityDeviceDcrPollPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'identity', 'openid', 'Device', '_dcr-response');
+  }
+
+  public identityTokenExchangePath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'identity', 'openid', 'Token', '_exchange');
+  }
+
+  public identityTokenExchangePollPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'identity', 'openid', 'Token', '_exchange-response');
+  }
+
+  public identityLicenseIssuePath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'identity', 'openid', 'License', '_issue');
+  }
+
+  public identitySmartTokenPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'identity', 'openid', 'smart', 'token');
+  }
+
+  public identitySmartTokenPollPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'identity', 'openid', 'smart', 'token-response');
+  }
+
+  public identityFirebaseCustomPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'identity', 'firebase', 'Token', '_custom');
+  }
+
+  public identityFirebaseCustomPollPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'identity', 'firebase', 'Token', '_custom-response');
+  }
+
+  public taskDebugCallStartPath(ctx: RouteContext, format = 'org.hl7.fhir.api'): string {
+    return this.v1Path(ctx, 'individual', format, 'Task', '_call-start');
+  }
+
+  public taskDebugLogsPath(ctx: RouteContext, format = 'org.hl7.fhir.api'): string {
+    return this.v1Path(ctx, 'individual', format, 'Task', '_logs');
   }
 
   // ---- Generic batch API --------------------------------------------------
 
   public async submitBatch(path: string, payload: unknown): Promise<SubmitResponse> {
-    const response = await this.postJson(path, payload, 'application/didcomm-plaintext+json');
+    const response = await this.doPost(path, payload, 'application/didcomm-plaintext+json');
     const body = await this.parseResponseBody(response);
 
     return {
@@ -107,8 +223,18 @@ export class DataspaceNodeClient {
     };
   }
 
+  public async postJson(path: string, payload: unknown): Promise<SubmitResponse> {
+    const response = await this.doPost(path, payload, 'application/json');
+    const body = await this.parseResponseBody(response);
+    return {
+      status: response.status,
+      location: response.headers.get('location') ?? undefined,
+      body,
+    };
+  }
+
   public async pollBatchResponse(path: string, request: AsyncPollRequest): Promise<{ status: number; body: unknown }> {
-    const response = await this.postJson(path, request, 'application/json');
+    const response = await this.doPost(path, request, 'application/json');
     return {
       status: response.status,
       body: await this.parseResponseBody(response),
@@ -160,7 +286,7 @@ export class DataspaceNodeClient {
 
   // ---- Internal HTTP helpers ---------------------------------------------
 
-  private async postJson(path: string, payload: unknown, contentType: string): Promise<Response> {
+  private async doPost(path: string, payload: unknown, contentType: string): Promise<Response> {
     const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
 
     const headers: Record<string, string> = {

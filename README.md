@@ -5,12 +5,14 @@ Node.js SDK skeleton to consume documented GW/UNID async DIDComm plain endpoints
 Status: bootstrap scaffold for integration services.
 
 ## Scope
-- Generic async batch client (`_batch` + `_batch-response`).
-- Path helpers for:
-  - host registry organization/order,
-  - individual family onboarding,
-  - RelatedPerson, Observation, Communication,
-  - Task (`org.hl7.fhir.api`).
+- Generic async batch client (`_batch` + `_batch-response`) and JSON POST helper.
+- Route builders that cover Swagger v1 route families:
+  - `host/registry`: `Organization _batch/_activate`, `Order`,
+  - `entity`: `Employee`,
+  - `identity`: `Device/_dcr`, `Token/_exchange`, `License/_issue`, SMART token, Firebase custom token,
+  - `individual`: `Organization`, `Order`, `Person (legacy)`, `Consent`, `Composition`, `Communication`, `RelatedPerson`, `Observation`, `Task`,
+  - `digitaltwin`: `Composition` (`org.hl7.fhir.api` and `org.hl7.fhir.r4`),
+  - debug UHC task endpoints: `_call-start`, `_logs`.
 
 ## Install (local workspace)
 
@@ -65,10 +67,26 @@ const result = await client.submitAndPoll(submitPath, pollPath, payload);
 console.log(result.poll.status, result.poll.body);
 ```
 
+## Swagger parity strategy
+- For any v1 route exposed in Swagger, use:
+  - `client.v1Path(ctx, section, format, resourceType, action)` for tenant routes.
+  - `client.hostRegistryPath(ctx, resourceType, action)` for host registry routes.
+- Then call one of:
+  - `submitBatch(path, didcommPayload)` for DIDComm plain submit routes,
+  - `pollBatchResponse(path, { thid })` / `pollUntilComplete(...)`,
+  - `postJson(path, payload)` for non-batch JSON routes.
+
+This avoids hardcoding curl scripts per endpoint.
+
 ## Notes for telephony tests
 - Keep GW/UHC unit/integration tests direct (service/router level).
 - Use this SDK for consumer-style E2E tests and external Node.js service integrations.
 - If individual onboarding moves to a separate service, telephony tests should consume that service and only use GW/UHC for reminders/calls.
+
+## DataConversion / Excel note
+- Excel attachment upload/preconversion ingestion (as used in `dataspace-client-sdk-py`) is not implemented in this SDK skeleton yet.
+- Current gateway-side coverage here focuses on documented GW/UNID HTTP routes.
+- Next step: add multipart/file adapters that call DataConversion API endpoints and then chain ingestion into GW `digitaltwin`/`individual` flows.
 
 ## Next planned additions
 - Secure envelope mode (`application/x-www-form-urlencoded`, request/response JWE).
