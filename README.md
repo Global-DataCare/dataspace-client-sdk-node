@@ -23,6 +23,19 @@ npm run type-check
 npm run build
 ```
 
+## Tests (mocked, no network)
+
+The SDK includes mocked tests (Python-SDK style) for:
+- route/path building,
+- async `submit + poll`,
+- multipart conversion upload.
+
+Run:
+```bash
+cd sdk/dataspace-client-sdk-node-ts
+npm test
+```
+
 ## Quick usage
 
 ```ts
