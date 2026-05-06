@@ -1,0 +1,67 @@
+{
+  "iss": "did:web:controller.example.org",
+  "sub": "did:web:controller.example.org",
+  "aud": "did:web:host.example.com",
+  "vp": {
+    "@context": [
+      "https://www.w3.org/ns/credentials/v2"
+    ],
+    "type": [
+      "VerifiablePresentation"
+    ],
+    "holder": "did:web:controller.example.org",
+    "verifiableCredential": [
+      {
+        "@context": [
+          "https://www.w3.org/ns/credentials/v2",
+          "https://schema.org"
+        ],
+        "type": [
+          "VerifiableCredential",
+          "OrganizationCredential"
+        ],
+        "issuer": "did:web:localhost%3A3310",
+        "credentialSubject": {
+          "id": "did:web:globaldatacare.es:onehealth:organization:taxid:VATES-B00000000",
+          "@type": "Organization",
+          "legalName": "Example Data Provider SL",
+          "taxID": "VATES-B00000000",
+          "sameAs": "did:web:provider.example.org",
+          "url": "provider.example.org",
+          "alternateName": "example-provider",
+          "identifier": "did:web:globaldatacare.es:onehealth:organization:taxid:VATES-B00000000",
+          "identifierType": "TAX",
+          "identifierValue": "VATES-B00000000",
+          "address": {
+            "@type": "PostalAddress",
+            "addressCountry": "ES"
+          }
+        }
+      },
+      {
+        "@context": [
+          "https://www.w3.org/ns/credentials/v2",
+          "https://schema.org"
+        ],
+        "type": [
+          "VerifiableCredential",
+          "PersonCredential",
+          "LegalRepresentativeCredential"
+        ],
+        "issuer": "did:web:localhost%3A3310",
+        "credentialSubject": {
+          "id": "urn:person:identifier:IDCES-99999999R",
+          "@type": "Person",
+          "name": "Alex Example",
+          "identifier": "IDCES-99999999R",
+          "sameAs": "did:web:controller.example.org",
+          "memberOf": {
+            "@type": "Organization",
+            "taxID": "VATES-B00000000"
+          }
+        }
+      }
+    ]
+  }
+}
+

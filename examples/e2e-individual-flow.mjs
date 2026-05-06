@@ -1,4 +1,9 @@
 import { DataspaceNodeClient, createDidcommPlainMessage } from '../dist/index.js';
+import {
+  ClaimsOrganizationSchemaorg,
+  ClaimsPersonSchemaorg,
+  ClaimsServiceSchemaorg,
+} from 'gdc-common-utils-ts/constants/schemaorg';
 
 const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
 const bearerToken = process.env.AUTH_BEARER || 'demo-token';
@@ -21,14 +26,14 @@ const payload = createDidcommPlainMessage({
           claims: {
             '@context': 'org.schema',
             '@type': 'template',
-            'org.schema.Organization.address.addressCountry': 'ES',
-            'org.schema.Organization.identifier.additionalType': 'UUID',
-            'org.schema.Organization.identifier.value': `family-${Date.now()}`,
-            'org.schema.Person.email': 'adult1@example.com',
-            'org.schema.Service.category': ctx.sector,
-            'org.schema.Service.identifier': 'did:web:api-provider.example.com',
-            'org.schema.Service.serviceType': 'http://terminology.hl7.org/CodeSystem/v3-ActReason|SRVC',
-            'org.schema.Service.termsOfService': 'https://provider.example.com/terms',
+            [ClaimsOrganizationSchemaorg.addressCountry]: 'ES',
+            [ClaimsOrganizationSchemaorg.identifierType]: 'UUID',
+            [ClaimsOrganizationSchemaorg.identifierValue]: `family-${Date.now()}`,
+            [ClaimsPersonSchemaorg.email]: 'adult1@example.com',
+            [ClaimsServiceSchemaorg.category]: ctx.sector,
+            [ClaimsServiceSchemaorg.identifier]: 'did:web:api-provider.example.com',
+            [ClaimsServiceSchemaorg.serviceType]: 'http://terminology.hl7.org/CodeSystem/v3-ActReason|SRVC',
+            [ClaimsServiceSchemaorg.termsOfService]: 'https://provider.example.com/terms',
           },
         },
       },
