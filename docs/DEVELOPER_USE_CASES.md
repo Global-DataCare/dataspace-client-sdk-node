@@ -19,7 +19,7 @@ const client = new DataspaceNodeClient({
 });
 
 const ctx = {
-  tenantId: 'acme',
+  tenantId: 'VATES-B00112233',
   jurisdiction: 'ES',
   sector: 'health-care',
 };
@@ -126,7 +126,7 @@ Scope namespace note:
 
 ```ts
 const consent = await client.grantProfessionalAccessSimple(ctx, {
-  subjectPhone: '+34600111222',
+  subjectDid: 'did:web:subject.example.com',
   subjectGivenName: 'Ana',
   actor: { identifier: 'did:web:hospital.example.com' },
   actorRole: 'Practitioner',
@@ -201,7 +201,7 @@ await client.grantProfessionalAccessSimple(ctx, {
 });
 ```
 
-### C) Actor by email/phone + role
+### C) Actor by email + role (portal-first)
 
 ```ts
 await client.grantProfessionalAccessSimple(ctx, {
@@ -213,15 +213,7 @@ await client.grantProfessionalAccessSimple(ctx, {
 });
 ```
 
-```ts
-await client.grantProfessionalAccessSimple(ctx, {
-  subjectDid: 'did:web:subject.example.com',
-  actor: { phone: '+34600111222' }, // maps to urn:tel:+34600111222
-  actorRole: 'Practitioner',
-  purpose: 'TREAT',
-  actions: ['organization/AppointmentResponse.cruds'],
-});
-```
+Phone-based actor identifiers are supported for compatibility flows, but email/DID are the primary portal channels.
 
 ### D) Jurisdiction + role (explicit claims)
 
