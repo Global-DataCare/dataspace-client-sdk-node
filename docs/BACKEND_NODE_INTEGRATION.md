@@ -22,8 +22,6 @@ This guide is backend-only and uses `dataspace-client-sdk-node`.
 | `_exchange` token flow | Identity/business | Activation code exchange for initial access | Multi-ICA/operator catalog traversal |
 | SMART access token | Identity/business | Authorized protected operations via scopes | Infrastructure/operator-plane control |
 
-If your deployment does not require a transport credential, omit `bearerToken` entirely.
-
 Recommended initialization:
 
 ```ts
@@ -40,7 +38,6 @@ const backendWallet = new SeedWalletProvider(
 
 const client = new DataspaceNodeClient({
   baseUrl,
-  bearerToken, // optional transport-plane credential if deployment requires it
   wallet: backendWallet,
   ctx: { tenantId, jurisdiction, sector },
 });
@@ -49,7 +46,7 @@ const client = new DataspaceNodeClient({
 Alternative (mutable context):
 
 ```ts
-const client = new DataspaceNodeClient({ baseUrl, bearerToken, wallet: backendWallet });
+const client = new DataspaceNodeClient({ baseUrl, wallet: backendWallet });
 client.setContextOrg({ tenantId, jurisdiction, sector });
 client.setDefaultTimeoutSeconds(12);
 client.setDefaultIntervalSeconds(2);
@@ -99,15 +96,21 @@ async function submitDidcomm(
 
 ## Flow A. Legal Organization Onboarding (B2B)
 
-1. Receive from frontend: `jurisdiction`, `sector`, `vpToken`.
-2. Activate in GW:
+1. Verify legal-organization PDF in ICA and obtain:
+   - `OrganizationCredential` VC
+   - `LegalRepresentativeCredential` VC
+2. Build VP payload with both VCs and prepare `header.payload` for signature.
+   - integrator signs with controller key (ES256K / ES384 / ML-DSA depending on environment policy)
+3. Receive from frontend/backend session context: `jurisdiction`, `sector`, `tenantId`, signed `vpToken`.
+4. Activate in GW:
    - SDK method: `activateOrganizationInGatewaySimple(...)` (recommended)
    - SDK method: `activateOrganizationInGatewayFromIcaProof(...)` (advanced)
-3. Complete legal organization order (always; amount may be `0`) using `offerId` returned by activation response.
+5. Complete legal organization order (always; amount may be `0`) using `offerId` returned by activation response.
    - `hostRegistryOrderBatchPath(...)`
    - `hostRegistryOrderPollPath(...)`
    - `submitAndPoll(...)`
-4. Run DCR/token bootstrap:
+6. Run controller DCR/token bootstrap first (`_exchange` then `_dcr`), then employee flows.
+7. Run employee DCR/token bootstrap when employee is invited/activated:
    - `activateEmployeeDeviceWithActivationCodeSimple(...)` (recommended)
    - `activateEmployeeDeviceWithActivationCode(...)` (advanced)
    - `requestSmartTokenSimple(...)` (recommended)
@@ -118,7 +121,7 @@ async function submitDidcomm(
 
 ```ts
 app.post('/api/onboarding/legal/activate', async (req, res) => {
-  const client = new DataspaceNodeClient({ baseUrl, bearerToken });
+  const client = new DataspaceNodeClient({ baseUrl });
   client.setContextOrg({
     tenantId: req.body.tenantId,
     jurisdiction: req.body.jurisdiction,
@@ -170,7 +173,7 @@ Async UX note:
 
 ```ts
 app.post('/api/onboarding/personal/register', async (req, res) => {
-  const client = new DataspaceNodeClient({ baseUrl, bearerToken });
+  const client = new DataspaceNodeClient({ baseUrl });
   const ctx = {
     tenantId: req.body.tenantId,
     jurisdiction: req.body.jurisdiction,

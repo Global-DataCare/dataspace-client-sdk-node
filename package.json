@@ -1,7 +1,17 @@
 {
   "name": "dataspace-client-sdk-node",
-  "version": "0.2.0",
-  "description": "Node.js SDK skeleton for GW/UNID DIDComm plain batch + async polling flows",
+  "version": "0.2.2",
+  "description": "Node.js SDK for DIDComm plain batch + async polling flows",
+  "license": "Apache-2.0",
+  "author": "Antifraud Services Inc.",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Global-DataCare/dataspace-client-sdk-node.git"
+  },
+  "homepage": "https://github.com/Global-DataCare/dataspace-client-sdk-node#readme",
+  "bugs": {
+    "url": "https://github.com/Global-DataCare/dataspace-client-sdk-node/issues"
+  },
   "type": "module",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
