@@ -1,4 +1,5 @@
 import { DataspaceNodeClient, createDidcommPlainMessage } from '../dist/index.js';
+import { ClaimsPersonSchemaorg } from 'gdc-common-utils-ts/constants/schemaorg';
 
 const baseUrl = process.env.BASE_URL || 'http://localhost:3000';
 const bearerToken = process.env.AUTH_BEARER || 'demo-token';
@@ -56,8 +57,8 @@ const employeePayload = createDidcommPlainMessage({
         meta: {
           claims: {
             '@context': 'org.schema',
-            'org.schema.Person.email': process.env.EMPLOYEE_EMAIL || 'doctor1@acme.org',
-            'org.schema.Person.hasOccupation': process.env.EMPLOYEE_ROLE || 'ISCO-08|2211',
+            [ClaimsPersonSchemaorg.email]: process.env.EMPLOYEE_EMAIL || 'doctor1@acme.org',
+            [ClaimsPersonSchemaorg.hasOccupation]: process.env.EMPLOYEE_ROLE || 'ISCO-08|2211',
           },
         },
       },

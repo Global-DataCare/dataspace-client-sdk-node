@@ -1,7 +1,6 @@
 {
-  "name": "dataspace-client-sdk-node-ts",
-  "version": "0.1.0",
-  "private": true,
+  "name": "dataspace-client-sdk-node",
+  "version": "0.2.0",
   "description": "Node.js SDK skeleton for GW/UNID DIDComm plain batch + async polling flows",
   "type": "module",
   "main": "dist/index.js",
@@ -9,12 +8,20 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "type-check": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test tests/*.test.mjs"
+    "test": "npm run build && node --test tests/*.test.mjs",
+    "example:e2e-bootstrap-tenant": "npm run build && node examples/e2e-bootstrap-tenant.mjs",
+    "test:e2e:live-gw-uc5": "npm run build && RUN_LIVE_GW_E2E=1 node --test tests/live-gw-uc5.e2e.test.mjs"
   },
   "engines": {
     "node": ">=22"
   },
   "devDependencies": {
+    "@types/node": "^25.6.0",
     "typescript": "^5.1.6"
+  },
+  "dependencies": {
+    "@noble/post-quantum": "^0.6.1",
+    "gdc-common-utils-ts": "^1.4.12",
+    "node-fetch": "^3.3.2"
   }
 }

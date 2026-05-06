@@ -1,15 +1,59 @@
+import { createHash, randomUUID } from 'node:crypto';
+import { createDidcommPlainMessage } from './builders.js';
+import { buildConsentClaimsSimpleWithCid } from 'gdc-common-utils-ts/utils/consent';
+import { generateServiceId } from 'gdc-common-utils-ts/utils/did';
+import { submitDidcomm, type DidcommFetchInit } from 'gdc-common-utils-ts/utils/didcomm-submit';
+import { ClaimsOfferSchemaorg, ClaimsPersonSchemaorg } from 'gdc-common-utils-ts/constants/schemaorg';
+import {
+  MedicationStatementClaimsFhirApi,
+  MedicationStatementClaimsFhirApiExtended,
+} from 'gdc-common-utils-ts/models/interoperable-claims/medication-statement-claims';
 import type {
   AsyncPollRequest,
+  BackendPkceAuthOptions,
+  BackendPkceAuthResult,
+  BackendSmartAuthOptions,
+  BackendSmartAuthResult,
   ClientOptions,
+  CreatePhoneReminderTasksInput,
+  GrantProfessionalAccessSimpleInput,
+  GrantProfessionalAccessSimpleResult,
+  DigitalTwinGenerationInput,
+  EmployeeDeviceActivationInput,
+  EndpointSelector,
+  EmployeeDeviceActivationSimpleInput,
+  EmployeeDeviceActivationResult,
+  FamilyOrganizationSummary,
+  FamilyRegistrationStatus,
+  GatewayOrganizationActivationInput,
+  GatewayOrganizationActivationSimpleInput,
   HostRouteContext,
+  IpsOrFhirImportInput,
+  MedicationOverlapCheckInput,
+  MedicationRegistrationInput,
+  OrganizationEmployeeCreationInput,
   PollOptions,
   PollResult,
+  OfferPreview,
+  OfferInfo,
   RouteContext,
+  SmartTokenExchangeInput,
+  SmartTokenExchangeResult,
+  SmartTokenRequestSimpleInput,
+  LegalOrganizationOrderSimpleInput,
+  SubjectOrganizationBootstrapInput,
+  SubjectOrganizationBootstrapResult,
+  IndividualOrganizationBootstrapSimpleInput,
+  IndividualOrganizationBootstrapSimpleResult,
+  IndividualOrganizationStartSimpleResult,
+  IndividualOrganizationConfirmOrderSimpleInput,
   SubmitAndPollResult,
   SubmitResponse,
   V1Action,
   V1Section,
 } from './types.js';
+import type { WalletProvider } from './sdk/dataspace-wallet-sdk-node/provider.js';
+import type { PublicJwk, WalletContext } from './sdk/dataspace-wallet-sdk-node/types.js';
 
 function trimTrailingSlash(value: string): string {
   return value.replace(/\/+$/, '');
@@ -19,218 +63,1073 @@ function encode(value: string): string {
   return encodeURIComponent(value);
 }
 
+function toDidWebFromUrlOrHost(raw: string): string | undefined {
+  const v = String(raw || '').trim();
+  if (!v) return undefined;
+  if (v.startsWith('did:web:')) return v;
+  const host = v
+    .replace(/^https?:\/\//i, '')
+    .replace(/\/.*$/, '')
+    .trim()
+    .toLowerCase();
+  if (!host) return undefined;
+  return `did:web:${host}`;
+}
+
+function parseRetryAfterMs(header: string | null): number | undefined {
+  if (!header) return undefined;
+  const raw = header.trim();
+  if (!raw) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds) && seconds >= 0) {
+    return Math.floor(seconds * 1000);
+  }
+  const epochMs = Date.parse(raw);
+  if (Number.isFinite(epochMs)) {
+    const delta = epochMs - Date.now();
+    return delta > 0 ? delta : 0;
+  }
+  return undefined;
+}
+
+type CachedToken = {
+  accessToken: string;
+  tokenType: string;
+  scopes: string[];
+  expiresAt: number; // unix ms
+};
+
 export class DataspaceNodeClient {
   private readonly baseUrl: string;
   private readonly bearerToken?: string;
   private readonly defaultHeaders: Record<string, string>;
+  private readonly wallet?: WalletProvider;
+  private defaultCtx?: RouteContext;
+  private defaultTimeoutMs?: number;
+  private defaultIntervalMs?: number;
+  private readonly _tokenCache = new Map<string, CachedToken>();
 
   constructor(options: ClientOptions) {
     this.baseUrl = trimTrailingSlash(options.baseUrl);
     this.bearerToken = options.bearerToken;
     this.defaultHeaders = options.defaultHeaders ?? {};
+    this.wallet = options.wallet;
+    this.defaultCtx = options.ctx;
+  }
+
+  public getWallet(): WalletProvider | undefined {
+    return this.wallet;
+  }
+
+  /**
+   * Set default route context for subsequent calls.
+   */
+  public setContext(ctx: RouteContext): this {
+    this.defaultCtx = { ...ctx };
+    return this;
+  }
+
+  /**
+   * Preferred alias for organization/tenant integration context.
+   */
+  public setContextOrg(ctx: RouteContext): this {
+    return this.setContext(ctx);
+  }
+
+  public setTenantId(tenantId: string): this {
+    const current = this.defaultCtx ?? { tenantId: '', jurisdiction: '', sector: '' };
+    this.defaultCtx = { ...current, tenantId };
+    return this;
+  }
+
+  public setJurisdiction(jurisdiction: string): this {
+    const current = this.defaultCtx ?? { tenantId: '', jurisdiction: '', sector: '' };
+    this.defaultCtx = { ...current, jurisdiction };
+    return this;
+  }
+
+  public setSector(sector: string): this {
+    const current = this.defaultCtx ?? { tenantId: '', jurisdiction: '', sector: '' };
+    this.defaultCtx = { ...current, sector };
+    return this;
+  }
+
+  public setDefaultTimeoutSeconds(seconds: number): this {
+    if (Number.isFinite(Number(seconds))) {
+      this.defaultTimeoutMs = Math.max(1, Math.floor(Number(seconds) * 1000));
+    }
+    return this;
+  }
+
+  public setDefaultIntervalSeconds(seconds: number): this {
+    if (Number.isFinite(Number(seconds))) {
+      this.defaultIntervalMs = Math.max(1, Math.floor(Number(seconds) * 1000));
+    }
+    return this;
+  }
+
+  /**
+   * Builds a deterministic endpoint id for token cache and auth/session reuse.
+   * If `providerDid` is provided, returns a full DID service id:
+   *   did:web:...#section:format:resourceType:action
+   * Otherwise returns the canonical fragment without '#':
+   *   section:format:resourceType:action
+   */
+  public getEndpointId(selector: EndpointSelector, providerDid?: string): string {
+    const fragment = generateServiceId(selector); // #section:format:resourceType:action
+    if (providerDid) return `${providerDid}${fragment}`;
+    return fragment.replace(/^#/, '');
+  }
+
+  private resolveSimplePollOptions(timeoutSeconds?: number, intervalSeconds?: number): PollOptions | undefined {
+    const pollOptions: PollOptions = {};
+    if (Number.isFinite(Number(timeoutSeconds))) {
+      pollOptions.timeoutMs = Math.max(1, Math.floor(Number(timeoutSeconds) * 1000));
+    } else if (this.defaultTimeoutMs) {
+      pollOptions.timeoutMs = this.defaultTimeoutMs;
+    }
+    if (Number.isFinite(Number(intervalSeconds))) {
+      pollOptions.intervalMs = Math.max(1, Math.floor(Number(intervalSeconds) * 1000));
+    } else if (this.defaultIntervalMs) {
+      pollOptions.intervalMs = this.defaultIntervalMs;
+    }
+    return Object.keys(pollOptions).length ? pollOptions : undefined;
+  }
+
+  private requireRouteContext(ctx?: RouteContext): RouteContext {
+    const resolved = ctx ?? this.defaultCtx;
+    const tenantId = String(resolved?.tenantId || '').trim();
+    const jurisdiction = String(resolved?.jurisdiction || '').trim();
+    const sector = String(resolved?.sector || '').trim();
+    if (!tenantId || !jurisdiction || !sector) {
+      throw new Error('Route context is required. Provide `ctx` in method call or constructor options.');
+    }
+    return { tenantId, jurisdiction, sector };
+  }
+
+  private requireHostRouteContext(ctx?: HostRouteContext): HostRouteContext {
+    const jurisdiction = String(ctx?.jurisdiction || this.defaultCtx?.jurisdiction || '').trim();
+    const sector = String(ctx?.sector || this.defaultCtx?.sector || '').trim();
+    if (jurisdiction && sector) {
+      return { jurisdiction, sector };
+    }
+    throw new Error('Host route context is required. Provide `ctx` in method call or constructor options.ctx.');
   }
 
   // ---- Path helpers -------------------------------------------------------
 
+  /**
+   * Generic GW v1 tenant route builder.
+   * Use this for any section/format/resourceType/action combination not covered
+   * by a dedicated convenience method.
+   *
+   * Pattern: `/{tenantId}/cds-{jurisdiction}/v1/{sector}/{section}/{format}/{resourceType}/{action}`
+   *
+   * @example
+   * client.v1Path(ctx, 'individual', 'org.schema', 'Organization', '_batch')
+   * // → /acme/cds-ES/v1/health-care/individual/org.schema/Organization/_batch
+   */
   public v1Path(
-    ctx: RouteContext,
+    ctx: RouteContext | undefined,
     section: V1Section,
     format: string,
     resourceType: string,
     action: V1Action,
   ): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/${encode(section)}/${encode(format)}/${encode(resourceType)}/${encode(action)}`;
+    const routeCtx = this.requireRouteContext(ctx);
+    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/${encode(section)}/${encode(format)}/${encode(resourceType)}/${encode(action)}`;
   }
 
+  /**
+   * Generic tenant-scoped identity route builder.
+   * Pattern: `/{prefix}/cds-{jurisdiction}/v1/{sector}/{tenantId}/identity/auth/{action}`
+   *
+   * The `prefix` is service-specific: `host` for GW, `publisher` for DataConv, `ica` for ICA.
+   * Dedicated path methods in this SDK use `host` (GW convention).
+   */
+  public tenantIdentityPath(ctx: RouteContext | undefined, prefix: string, action: string): string {
+    const routeCtx = this.requireRouteContext(ctx);
+    return `/${encode(prefix)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/${encode(routeCtx.tenantId)}/identity/auth/${encode(action)}`;
+  }
+
+  /**
+   * Generic host registry route builder (tenant-agnostic, `host/` prefix).
+   * Use for controller-level registry operations (Organization activate, Order, etc.).
+   *
+   * Pattern: `/host/cds-{jurisdiction}/v1/{sector}/registry/org.schema/{resourceType}/{action}`
+   */
   public hostRegistryPath(
-    ctx: HostRouteContext,
+    ctx: HostRouteContext | undefined,
     resourceType: string,
     action: V1Action,
   ): string {
-    return `/host/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/registry/org.schema/${encode(resourceType)}/${encode(action)}`;
+    const hostCtx = this.requireHostRouteContext(ctx);
+    return `/host/cds-${encode(hostCtx.jurisdiction)}/v1/${encode(hostCtx.sector)}/registry/org.schema/${encode(resourceType)}/${encode(action)}`;
   }
 
-  public hostRegistryOrganizationBatchPath(ctx: HostRouteContext): string {
+  /** Submit path: host registry Organization batch (controller-level org registration). */
+  public hostRegistryOrganizationBatchPath(ctx?: HostRouteContext): string {
     return this.hostRegistryPath(ctx, 'Organization', '_batch');
   }
 
-  public hostRegistryOrganizationPollPath(ctx: HostRouteContext): string {
+  /** Poll path: host registry Organization batch. Pair with `hostRegistryOrganizationBatchPath`. */
+  public hostRegistryOrganizationPollPath(ctx?: HostRouteContext): string {
     return this.hostRegistryPath(ctx, 'Organization', '_batch-response');
   }
 
-  public hostRegistryOrganizationActivatePath(ctx: HostRouteContext): string {
+  /** Submit path: activate a tenant Organization in the GW registry using a VC from ICA. */
+  public hostRegistryOrganizationActivatePath(ctx?: HostRouteContext): string {
     return this.hostRegistryPath(ctx, 'Organization', '_activate');
   }
 
-  public hostRegistryOrganizationActivatePollPath(ctx: HostRouteContext): string {
+  /** Poll path: `_activate` response. Pair with `hostRegistryOrganizationActivatePath`. */
+  public hostRegistryOrganizationActivatePollPath(ctx?: HostRouteContext): string {
     return this.hostRegistryPath(ctx, 'Organization', '_activate-response');
   }
 
-  public hostRegistryOrderBatchPath(ctx: HostRouteContext): string {
+  /** Submit path: host registry Order batch (controller-level order submission). */
+  public hostRegistryOrderBatchPath(ctx?: HostRouteContext): string {
     return this.hostRegistryPath(ctx, 'Order', '_batch');
   }
 
-  public hostRegistryOrderPollPath(ctx: HostRouteContext): string {
+  /** Poll path: host registry Order batch. Pair with `hostRegistryOrderBatchPath`. */
+  public hostRegistryOrderPollPath(ctx?: HostRouteContext): string {
     return this.hostRegistryPath(ctx, 'Order', '_batch-response');
   }
 
-  public individualFamilyOrganizationBatchPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.schema/Organization/_batch`;
+  /**
+   * Submit path: individual/family Organization onboarding (`org.schema/Organization/_batch`).
+   * Use for `family-registration/_create-or-resume` DIDComm payloads.
+   */
+  public individualFamilyOrganizationBatchPath(ctx?: RouteContext): string {
+    const routeCtx = this.requireRouteContext(ctx);
+    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/individual/org.schema/Organization/_batch`;
   }
 
-  public individualFamilyOrganizationPollPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.schema/Organization/_batch-response`;
+  /** Poll path: individual/family Organization. Pair with `individualFamilyOrganizationBatchPath`. */
+  public individualFamilyOrganizationPollPath(ctx?: RouteContext): string {
+    const routeCtx = this.requireRouteContext(ctx);
+    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/individual/org.schema/Organization/_batch-response`;
   }
 
-  public individualFamilyOrderBatchPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.schema/Order/_batch`;
+  /** Submit path: individual/family Organization search (`org.schema/Organization/_search`). */
+  public individualFamilyOrganizationSearchPath(ctx?: RouteContext): string {
+    return this.v1Path(ctx, 'individual', 'org.schema', 'Organization', '_search');
   }
 
-  public individualFamilyOrderPollPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.schema/Order/_batch-response`;
+  /** Poll path: individual/family Organization search. Pair with `individualFamilyOrganizationSearchPath`. */
+  public individualFamilyOrganizationSearchPollPath(ctx?: RouteContext): string {
+    return this.v1Path(ctx, 'individual', 'org.schema', 'Organization', '_search-response');
   }
 
+  /** Submit path: individual/family Order batch (`org.schema/Order/_batch`). */
+  public individualFamilyOrderBatchPath(ctx?: RouteContext): string {
+    const routeCtx = this.requireRouteContext(ctx);
+    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/individual/org.schema/Order/_batch`;
+  }
+
+  /** Poll path: individual/family Order. Pair with `individualFamilyOrderBatchPath`. */
+  public individualFamilyOrderPollPath(ctx?: RouteContext): string {
+    const routeCtx = this.requireRouteContext(ctx);
+    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/individual/org.schema/Order/_batch-response`;
+  }
+
+  /** Submit path: individual RelatedPerson (FHIR R4 API, `org.hl7.fhir.api/RelatedPerson/_batch`). */
   public individualRelatedPersonBatchPath(ctx: RouteContext): string {
     return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/RelatedPerson/_batch`;
   }
 
+  /** Poll path: individual RelatedPerson. Pair with `individualRelatedPersonBatchPath`. */
   public individualRelatedPersonPollPath(ctx: RouteContext): string {
     return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/RelatedPerson/_batch-response`;
   }
 
+  /** Submit path: individual Observation (FHIR R4 API, `org.hl7.fhir.api/Observation/_batch`). */
   public individualObservationBatchPath(ctx: RouteContext): string {
     return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/Observation/_batch`;
   }
 
+  /** Poll path: individual Observation. Pair with `individualObservationBatchPath`. */
   public individualObservationPollPath(ctx: RouteContext): string {
     return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/Observation/_batch-response`;
   }
 
+  /** Submit path: individual Communication (FHIR R4, `org.hl7.fhir.r4/Communication/_batch`). */
   public individualCommunicationBatchPath(ctx: RouteContext): string {
     return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.r4/Communication/_batch`;
   }
 
+  /** Poll path: individual Communication. Pair with `individualCommunicationBatchPath`. */
   public individualCommunicationPollPath(ctx: RouteContext): string {
     return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.r4/Communication/_batch-response`;
   }
 
+  /** Submit path: individual Task (FHIR R4 API, `org.hl7.fhir.api/Task/_batch`). */
   public individualTaskBatchPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'individual', 'org.hl7.fhir.api', 'Task', '_batch');
   }
 
+  /** Poll path: individual Task. Pair with `individualTaskBatchPath`. */
   public individualTaskPollPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'individual', 'org.hl7.fhir.api', 'Task', '_batch-response');
   }
 
-  public employeeBatchPath(ctx: RouteContext): string {
+  /** Submit path: entity Employee (`entity/org.schema/Employee/_batch`). */
+  public employeeBatchPath(ctx?: RouteContext): string {
     return this.v1Path(ctx, 'entity', 'org.schema', 'Employee', '_batch');
   }
 
-  public employeePollPath(ctx: RouteContext): string {
+  /** Poll path: entity Employee. Pair with `employeeBatchPath`. */
+  public employeePollPath(ctx?: RouteContext): string {
     return this.v1Path(ctx, 'entity', 'org.schema', 'Employee', '_batch-response');
   }
 
+  /** Submit path: individual Person legacy format (`individual/org.schema/Person/_batch`). Use for older flows; prefer Organization for family onboarding. */
   public individualLegacyPersonBatchPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'individual', 'org.schema', 'Person', '_batch');
   }
 
+  /** Submit path: individual Consent (FHIR R4, `org.hl7.fhir.r4/Consent/_batch`). */
   public individualConsentR4BatchPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Consent', '_batch');
   }
 
+  /** Poll path: individual Consent R4. Pair with `individualConsentR4BatchPath`. */
   public individualConsentR4PollPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Consent', '_batch-response');
   }
 
+  /** Submit path: individual Composition (FHIR R4, `org.hl7.fhir.r4/Composition/_batch`). */
   public individualCompositionR4BatchPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Composition', '_batch');
   }
 
+  /** Poll path: individual Composition R4. Pair with `individualCompositionR4BatchPath`. */
   public individualCompositionR4PollPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Composition', '_batch-response');
   }
 
+  /** Submit path: digital twin Composition (FHIR API format, `digitaltwin/org.hl7.fhir.api/Composition/_batch`). */
   public digitalTwinCompositionApiBatchPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.api', 'Composition', '_batch');
   }
 
+  /** Poll path: digital twin Composition API. Pair with `digitalTwinCompositionApiBatchPath`. */
   public digitalTwinCompositionApiPollPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.api', 'Composition', '_batch-response');
   }
 
+  /** Submit path: digital twin Composition (FHIR R4 format, `digitaltwin/org.hl7.fhir.r4/Composition/_batch`). */
   public digitalTwinCompositionR4BatchPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.r4', 'Composition', '_batch');
   }
 
+  /** Poll path: digital twin Composition R4. Pair with `digitalTwinCompositionR4BatchPath`. */
   public digitalTwinCompositionR4PollPath(ctx: RouteContext): string {
     return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.r4', 'Composition', '_batch-response');
   }
 
-  public identityDeviceDcrPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'identity', 'openid', 'Device', '_dcr');
+  /**
+   * Submit path: identity DCR step — binds API key to service public JWK.
+   * Used internally by `authenticateBackendPkceAndExchange` (step 1 of identity-exchange.v1).
+   */
+  public identityDeviceDcrPath(ctx?: RouteContext): string {
+    return this.tenantIdentityPath(ctx, 'host', '_dcr');
   }
 
-  public identityDeviceDcrPollPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'identity', 'openid', 'Device', '_dcr-response');
+  /** Poll path: identity DCR. Pair with `identityDeviceDcrPath`. */
+  public identityDeviceDcrPollPath(ctx?: RouteContext): string {
+    return this.tenantIdentityPath(ctx, 'host', '_dcr-response');
   }
 
-  public identityTokenExchangePath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'identity', 'openid', 'Token', '_exchange');
+  /**
+   * Submit path: identity token exchange — id_token → SMART bearer.
+   * Used internally by `authenticateBackendPkceAndExchange` (step 4 of identity-exchange.v1).
+   */
+  public identityTokenExchangePath(ctx?: RouteContext): string {
+    return this.tenantIdentityPath(ctx, 'host', '_exchange');
   }
 
-  public identityTokenExchangePollPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'identity', 'openid', 'Token', '_exchange-response');
+  /** Poll path: identity token exchange. Pair with `identityTokenExchangePath`. */
+  public identityTokenExchangePollPath(ctx?: RouteContext): string {
+    return this.tenantIdentityPath(ctx, 'host', '_exchange-response');
   }
 
-  public identityLicenseIssuePath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'identity', 'openid', 'License', '_issue');
+  /** Submit path: identity license issue (`identity/auth/_issue`). */
+  public identityLicenseIssuePath(ctx?: RouteContext): string {
+    return this.tenantIdentityPath(ctx, 'host', '_issue');
   }
 
+  /**
+   * Submit path: SMART token step — code + code_verifier → id_token.
+   * Used internally by `authenticateBackendPkceAndExchange` (step 3 of identity-exchange.v1).
+   */
   public identitySmartTokenPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'identity', 'openid', 'smart', 'token');
+    return this.tenantIdentityPath(ctx, 'host', '_token');
   }
 
+  /** Poll path: SMART token. Pair with `identitySmartTokenPath`. */
   public identitySmartTokenPollPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'identity', 'openid', 'smart', 'token-response');
+    return this.tenantIdentityPath(ctx, 'host', '_token-response');
   }
 
+  /** Submit path: Firebase custom token exchange (end-user device flow, NOT B2B). */
   public identityFirebaseCustomPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'identity', 'firebase', 'Token', '_custom');
+    return this.tenantIdentityPath(ctx, 'host', '_custom');
   }
 
+  /** Poll path: Firebase custom token. Pair with `identityFirebaseCustomPath`. */
   public identityFirebaseCustomPollPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'identity', 'firebase', 'Token', '_custom-response');
+    return this.tenantIdentityPath(ctx, 'host', '_custom-response');
   }
 
+  /**
+   * Submit path: identity PKCE code step — sends S256 code_challenge.
+   * Used internally by `authenticateBackendPkceAndExchange` (step 2 of identity-exchange.v1).
+   */
+  public identityCodePath(ctx: RouteContext): string {
+    return this.tenantIdentityPath(ctx, 'host', '_code');
+  }
+
+  /** Poll path: identity PKCE code. Pair with `identityCodePath`. */
+  public identityCodePollPath(ctx: RouteContext): string {
+    return this.tenantIdentityPath(ctx, 'host', '_code-response');
+  }
+
+  /** Submit path: UHC debug task call-start (`individual/{format}/Task/_call-start`). For telephony integration testing. */
   public taskDebugCallStartPath(ctx: RouteContext, format = 'org.hl7.fhir.api'): string {
     return this.v1Path(ctx, 'individual', format, 'Task', '_call-start');
   }
 
+  /** Path: UHC debug task logs (`individual/{format}/Task/_logs`). Retrieve async task execution logs. */
   public taskDebugLogsPath(ctx: RouteContext, format = 'org.hl7.fhir.api'): string {
     return this.v1Path(ctx, 'individual', format, 'Task', '_logs');
   }
 
+  /**
+   * Submit path: DataConversion file upload.
+   * Pattern: `/{tenantId}/cds-{jurisdiction}/v1/{sector}/conversion/{softwareId}/{sourceFormat}/_upload`
+   * Use with `uploadConversionFile` to send a file (e.g. XLSX) for async processing.
+   */
   public conversionUploadPath(ctx: RouteContext, softwareId: string, sourceFormat: string): string {
     return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/conversion/${encode(softwareId)}/${encode(sourceFormat)}/_upload`;
   }
 
+  /** Poll path: DataConversion upload. Pair with `conversionUploadPath`. */
   public conversionUploadPollPath(ctx: RouteContext, softwareId: string, sourceFormat: string): string {
     return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/conversion/${encode(softwareId)}/${encode(sourceFormat)}/_upload-response`;
   }
 
-  // ---- Generic batch API --------------------------------------------------
+  // ---- Backend PKCE auth (identity-exchange.v1) -------------------------
 
-  public async submitBatch(path: string, payload: unknown): Promise<SubmitResponse> {
-    const response = await this.doPost(path, payload, 'application/didcomm-plaintext+json');
-    const body = await this.parseResponseBody(response);
+  /**
+   * Orchestrates the full identity-exchange.v1 backend auth flow:
+   * DCR binding → PKCE code → token → SMART bearer exchange.
+   *
+   * Equivalent to Python connector_sdk `authenticate_backend_pkce_and_exchange`.
+   * Results are cached in memory; re-runs automatically on expiry.
+   */
+  public async authenticateBackendPkceAndExchange(
+    options: BackendPkceAuthOptions,
+  ): Promise<BackendPkceAuthResult> {
+    const {
+      ctx,
+      apiKey,
+      scopes,
+      tokenCacheKey = `pkce:${apiKey.slice(0, 8)}`,
+      endpointId,
+      codeVerifier = randomUUID(),
+      pollOptions,
+    } = options;
+
+    const cacheKey = String(tokenCacheKey || endpointId || '').trim() || `pkce:${apiKey.slice(0, 8)}`;
+    const cached = this._tokenCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now() + 30_000) {
+      return { status: 'cached', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: cached.accessToken, tokenType: cached.tokenType, scopes: cached.scopes };
+    }
+
+    const controllerPublicJwk = await this.resolveControllerPublicJwk(options);
+
+    // Step 1: DCR – bind API key to service public key
+    const dcrPayload = this._buildAuthDIDCommRequest({
+      thid: `dcr-${randomUUID()}`,
+      clientId: apiKey,
+      body: {},
+      controllerPublicJwk,
+    });
+    await this.submitBatch(this.identityDeviceDcrPath(ctx), dcrPayload);
+    const dcrPoll = await this.pollUntilComplete(
+      this.identityDeviceDcrPollPath(ctx),
+      { thid: String(dcrPayload['thid']) },
+      pollOptions,
+    );
+    if (dcrPoll.status !== 200) {
+      return { status: 'failed', step: '_dcr', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: '', tokenType: 'Bearer', scopes };
+    }
+
+    // Step 2: Code – PKCE S256 challenge
+    const codeChallenge = this._pkceS256Challenge(codeVerifier);
+    const codePayload = this._buildAuthDIDCommRequest({
+      thid: `code-${randomUUID()}`,
+      clientId: apiKey,
+      body: {},
+      controllerPublicJwk,
+      extra: { code_challenge: codeChallenge, code_challenge_method: 'S256' },
+    });
+    await this.submitBatch(this.identityCodePath(ctx), codePayload);
+    const codePoll = await this.pollUntilComplete(
+      this.identityCodePollPath(ctx),
+      { thid: String(codePayload['thid']) },
+      pollOptions,
+    );
+    const codeBody = (codePoll.body as Record<string, unknown>) ?? {};
+    const code = String(codeBody['code'] ?? '').trim();
+    if (codePoll.status !== 200 || !code) {
+      return { status: 'failed', step: '_code', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: '', tokenType: 'Bearer', scopes };
+    }
+
+    // Step 3: Token – exchange code + verifier for id_token
+    const tokenPayload = this._buildAuthDIDCommRequest({
+      thid: `token-${randomUUID()}`,
+      clientId: apiKey,
+      body: {},
+      controllerPublicJwk,
+      extra: { code, code_verifier: codeVerifier },
+    });
+    await this.submitBatch(this.identitySmartTokenPath(ctx), tokenPayload);
+    const tokenPoll = await this.pollUntilComplete(
+      this.identitySmartTokenPollPath(ctx),
+      { thid: String(tokenPayload['thid']) },
+      pollOptions,
+    );
+    const tokenBody = (tokenPoll.body as Record<string, unknown>) ?? {};
+    const idToken = String(tokenBody['id_token'] ?? '').trim();
+    if (tokenPoll.status !== 200 || !idToken) {
+      return { status: 'failed', step: '_token', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: '', tokenType: 'Bearer', scopes };
+    }
+
+    // Step 4: Exchange – id_token → SMART bearer
+    const exchangeThid = `exchange-${randomUUID()}`;
+    const exchangePayload: Record<string, unknown> = {
+      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+      subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
+      subject_token: idToken,
+      scope: scopes.join(' '),
+      api_key: apiKey,
+      organization: ctx.tenantId,
+      thid: exchangeThid,
+    };
+    await this.submitBatch(this.identityTokenExchangePath(ctx), exchangePayload);
+    const exchangePoll = await this.pollUntilComplete(
+      this.identityTokenExchangePollPath(ctx),
+      { thid: exchangeThid },
+      pollOptions,
+    );
+    const exchangeBody = (exchangePoll.body as Record<string, unknown>) ?? {};
+    const accessToken = String(exchangeBody['access_token'] ?? '').trim();
+    if (exchangePoll.status !== 200 || !accessToken) {
+      return { status: 'failed', step: '_exchange', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: '', tokenType: 'Bearer', scopes };
+    }
+
+    const tokenType = String(exchangeBody['token_type'] ?? 'Bearer');
+    const grantedScope = String(exchangeBody['scope'] ?? '').trim();
+    const grantedScopes = grantedScope ? grantedScope.split(' ').filter(Boolean) : scopes;
+    const expiresIn = Number(exchangeBody['expires_in'] ?? 0);
+
+    this._tokenCache.set(cacheKey, {
+      accessToken,
+      tokenType,
+      scopes: grantedScopes,
+      expiresAt: Date.now() + expiresIn * 1000,
+    });
+
+    return { status: 'fetched', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken, tokenType, scopes: grantedScopes };
+  }
+
+  /**
+   * Returns the cached SMART bearer for the given endpointId if still valid (>30s remaining).
+   * Returns `undefined` if not cached or expired.
+   */
+  public getCachedBearerToken(tokenCacheKey: string): string | undefined {
+    const cached = this._tokenCache.get(tokenCacheKey);
+    if (cached && cached.expiresAt > Date.now() + 30_000) {
+      return cached.accessToken;
+    }
+    return undefined;
+  }
+
+  /**
+   * smart-backend.v1: obtain an OAuth2 backend token using client_credentials + private_key_jwt.
+   */
+  public async authenticateBackendSmartStandard(
+    options: BackendSmartAuthOptions,
+  ): Promise<BackendSmartAuthResult> {
+    const {
+      clientId,
+      scopes,
+      tokenCacheKey = `smart-backend:${clientId}`,
+      endpointId,
+      tokenUrl,
+      tokenPath = '/token',
+      audience,
+      assertionTtlSeconds = 300,
+      additionalTokenFields,
+    } = options;
+
+    const cacheKey = String(tokenCacheKey || endpointId || '').trim() || `smart-backend:${clientId}`;
+    const cached = this._tokenCache.get(cacheKey);
+    if (cached && cached.expiresAt > Date.now() + 30_000) {
+      return {
+        status: 'cached',
+        profile: 'smart-backend.v1',
+        tokenCacheKey: cacheKey,
+        endpointId: cacheKey,
+        accessToken: cached.accessToken,
+        tokenType: cached.tokenType,
+        scopes: cached.scopes,
+        expiresAt: new Date(cached.expiresAt).toISOString(),
+      };
+    }
+
+    const resolvedTokenUrl = this.resolveStandardTokenUrl(tokenUrl, tokenPath);
+    const publicJwk = await this.resolveSmartAuthPublicJwk(options);
+    const clientAssertion = await this.signSmartBackendClientAssertion({
+      clientId,
+      audience: audience ?? resolvedTokenUrl,
+      publicJwk,
+      ttlSeconds: assertionTtlSeconds,
+      walletContext: options.walletContext,
+    });
+
+    const tokenRequest: Record<string, string> = {
+      grant_type: 'client_credentials',
+      client_id: clientId,
+      scope: scopes.join(' '),
+      client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
+      client_assertion: clientAssertion,
+      ...(additionalTokenFields ?? {}),
+    };
+    const response = await this.postJson(tokenUrl ?? tokenPath, tokenRequest);
+    const body = (response.body as Record<string, unknown>) ?? {};
+    const accessToken = String(body.access_token ?? '').trim();
+
+    if (response.status >= 400 || !accessToken) {
+      return {
+        status: 'failed',
+        profile: 'smart-backend.v1',
+        tokenCacheKey: cacheKey,
+        endpointId: cacheKey,
+        statusCode: response.status,
+        response,
+      };
+    }
+
+    const tokenType = String(body.token_type ?? 'Bearer');
+    const grantedScope = String(body.scope ?? '').trim();
+    const grantedScopes = grantedScope ? grantedScope.split(' ').filter(Boolean) : scopes;
+    const expiresIn = Number(body.expires_in ?? 0);
+    const expiresAt = Date.now() + expiresIn * 1000;
+
+    this._tokenCache.set(cacheKey, {
+      accessToken,
+      tokenType,
+      scopes: grantedScopes,
+      expiresAt,
+    });
 
     return {
-      status: response.status,
-      location: response.headers.get('location') ?? undefined,
-      body,
+      status: 'fetched',
+      profile: 'smart-backend.v1',
+      tokenCacheKey: cacheKey,
+      endpointId: cacheKey,
+      statusCode: response.status,
+      accessToken,
+      tokenType,
+      scopes: grantedScopes,
+      expiresAt: new Date(expiresAt).toISOString(),
+      response,
     };
   }
 
+  /**
+   * Exchange token payload against gateway token endpoint and cache the result.
+   */
+  public async requestSmartToken(input: SmartTokenExchangeInput): Promise<SmartTokenExchangeResult> {
+    const tokenCacheKey = String(input.tokenCacheKey || input.endpointId || '').trim();
+    if (!tokenCacheKey) {
+      throw new Error('requestSmartToken requires tokenCacheKey.');
+    }
+
+    const normalizedScopes = Array.from(new Set((input.scopes || []).filter(Boolean))).sort();
+    const cached = this._tokenCache.get(tokenCacheKey);
+    if (cached && cached.expiresAt > Date.now() + 30_000) {
+      return {
+        status: 'cached',
+        accessToken: cached.accessToken,
+        tokenType: cached.tokenType,
+        scopes: cached.scopes,
+      };
+    }
+
+    const response = await this.postJson(input.path || '/token', input.exchangePayload || {});
+    const body = (response.body as Record<string, unknown>) ?? {};
+    const accessToken = String(body.access_token ?? '').trim();
+
+    if (response.status >= 400 || !accessToken) {
+      return {
+        status: 'failed',
+        statusCode: response.status,
+        response,
+      };
+    }
+
+    const tokenType = String(body.token_type ?? 'Bearer');
+    const grantedScopes = Array.isArray(body.granted_scopes)
+      ? (body.granted_scopes as string[])
+      : String(body.scope ?? '').trim().split(' ').filter(Boolean);
+    const resolvedScopes = grantedScopes.length ? grantedScopes : normalizedScopes;
+    const expiresIn = Number(body.expires_in ?? 0);
+    this._tokenCache.set(tokenCacheKey, {
+      accessToken,
+      tokenType,
+      scopes: resolvedScopes,
+      expiresAt: Date.now() + expiresIn * 1000,
+    });
+
+    return {
+      status: 'fetched',
+      accessToken,
+      tokenType,
+      scopes: resolvedScopes,
+      statusCode: response.status,
+      response,
+    };
+  }
+
+  /**
+   * Friendly wrapper for SMART token request via GW identity/auth token-exchange route.
+   * Uses one object, seconds-based polling, and constructor ctx fallback.
+   */
+  public async requestSmartTokenSimple(
+    input: SmartTokenRequestSimpleInput,
+  ): Promise<SmartTokenExchangeResult> {
+    const routeCtx = this.requireRouteContext(
+      input.tenantId && input.jurisdiction && input.sector
+        ? { tenantId: input.tenantId, jurisdiction: input.jurisdiction, sector: input.sector }
+        : undefined,
+    );
+    const normalizedScopes = Array.from(new Set((input.scopes || []).filter(Boolean))).sort();
+    const tokenCacheKey = String(input.tokenCacheKey || input.endpointId || `smart:${routeCtx.tenantId}:${normalizedScopes.join(',')}`).trim();
+    if (!tokenCacheKey) {
+      throw new Error('requestSmartTokenSimple requires tokenCacheKey (or non-empty scopes).');
+    }
+    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
+
+    const payload: Record<string, unknown> = {
+      thid: `exchange-${randomUUID()}`,
+      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
+      subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
+      subject_token: input.idToken,
+      scope: normalizedScopes.join(' '),
+      organization: routeCtx.tenantId,
+      ...(input.additionalClaims || {}),
+    };
+
+    const exchange = await this.submitAndPoll(
+      this.identityTokenExchangePath(routeCtx),
+      this.identityTokenExchangePollPath(routeCtx),
+      payload,
+      pollOptions,
+    );
+
+    const exchangeBody = (exchange.poll.body as Record<string, unknown>) ?? {};
+    const accessToken = String(exchangeBody.access_token || '').trim();
+    if (exchange.poll.status >= 400 || !accessToken) {
+      return {
+        status: 'failed',
+        statusCode: exchange.poll.status,
+        response: exchange.poll.body,
+      };
+    }
+
+    const tokenType = String(exchangeBody.token_type || 'Bearer');
+    const grantedScopes = String(exchangeBody.scope || '').trim().split(' ').filter(Boolean);
+    const resolvedScopes = grantedScopes.length ? grantedScopes : normalizedScopes;
+    const expiresIn = Number(exchangeBody.expires_in ?? 0);
+    this._tokenCache.set(tokenCacheKey, {
+      accessToken,
+      tokenType,
+      scopes: resolvedScopes,
+      expiresAt: Date.now() + expiresIn * 1000,
+    });
+
+    return {
+      status: 'fetched',
+      accessToken,
+      tokenType,
+      scopes: resolvedScopes,
+      statusCode: exchange.poll.status,
+      response: exchange.poll.body,
+    };
+  }
+
+  // ---- Private auth helpers ----------------------------------------------
+
+  private _pkceS256Challenge(verifier: string): string {
+    return createHash('sha256').update(verifier).digest().toString('base64url');
+  }
+
+  private _buildAuthDIDCommRequest(params: {
+    thid: string;
+    clientId: string;
+    body: Record<string, unknown>;
+    controllerPublicJwk: PublicJwk | Record<string, unknown>;
+    extra?: Record<string, unknown>;
+  }): Record<string, unknown> {
+    const now = Math.floor(Date.now() / 1000);
+    return {
+      thid: params.thid,
+      type: 'application/bundle-api+json',
+      iat: now,
+      exp: now + 300,
+      client_id: params.clientId,
+      body: params.body,
+      meta: {
+        jws: {
+          protected: {
+            alg: 'ES384',
+            jwk: params.controllerPublicJwk,
+          },
+        },
+      },
+      ...(params.extra ?? {}),
+    };
+  }
+
+  private async resolveControllerPublicJwk(
+    options: BackendPkceAuthOptions,
+  ): Promise<PublicJwk | Record<string, unknown>> {
+    if (options.controllerPublicJwk) {
+      return options.controllerPublicJwk;
+    }
+
+    if (!this.wallet) {
+      throw new Error('authenticateBackendPkceAndExchange requires controllerPublicJwk or a configured wallet provider.');
+    }
+
+    const walletContext: WalletContext = options.walletContext ?? {
+      tenantId: options.ctx.tenantId,
+      jurisdiction: options.ctx.jurisdiction,
+      sector: options.ctx.sector,
+    };
+    const publicJwks = await this.wallet.getPublicJwks(walletContext);
+    const controllerPublicJwk = publicJwks.find((jwk) => jwk.use === 'sig' || jwk.alg === 'ES384') ?? publicJwks[0];
+
+    if (!controllerPublicJwk) {
+      throw new Error('Wallet provider returned no public JWKs for the requested context.');
+    }
+
+    return controllerPublicJwk;
+  }
+
+  private resolveStandardTokenUrl(tokenUrl: string | undefined, tokenPath: string): string {
+    if (tokenUrl && tokenUrl.trim()) {
+      return tokenUrl.trim();
+    }
+    return `${this.baseUrl}${tokenPath.startsWith('/') ? tokenPath : `/${tokenPath}`}`;
+  }
+
+  private async resolveSmartAuthPublicJwk(
+    options: BackendSmartAuthOptions,
+  ): Promise<PublicJwk | Record<string, unknown>> {
+    if (options.publicJwk) {
+      return options.publicJwk;
+    }
+
+    if (!this.wallet) {
+      throw new Error('authenticateBackendSmartStandard requires publicJwk or a configured wallet provider.');
+    }
+
+    const walletContext: WalletContext = options.walletContext ?? {
+      tenantId: options.clientId,
+      jurisdiction: 'global',
+      sector: 'backend',
+    };
+    const publicJwks = await this.wallet.getPublicJwks(walletContext);
+    const signingJwk = publicJwks.find((jwk) => jwk.use === 'sig' || jwk.alg === 'ES384') ?? publicJwks[0];
+
+    if (!signingJwk) {
+      throw new Error('Wallet provider returned no public JWKs for smart-backend.v1.');
+    }
+
+    return signingJwk;
+  }
+
+  private async signSmartBackendClientAssertion(params: {
+    clientId: string;
+    audience: string;
+    publicJwk: PublicJwk | Record<string, unknown>;
+    ttlSeconds: number;
+    walletContext?: WalletContext;
+  }): Promise<string> {
+    if (!this.wallet) {
+      throw new Error('smart-backend.v1 signing requires a configured wallet provider.');
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    const walletContext: WalletContext = params.walletContext ?? {
+      tenantId: params.clientId,
+      jurisdiction: 'global',
+      sector: 'backend',
+    };
+    const kid = String((params.publicJwk as { kid?: string }).kid ?? '').trim();
+
+    return this.wallet.signCompactJws(walletContext, {
+      header: {
+        typ: 'JWT',
+        alg: this.preferredJwtAlg(params.publicJwk),
+        ...(kid ? { kid } : {}),
+      },
+      claims: {
+        iss: params.clientId,
+        sub: params.clientId,
+        aud: params.audience,
+        iat: now,
+        exp: now + Math.max(params.ttlSeconds, 1),
+        jti: `jwt-${randomUUID()}`,
+      },
+    });
+  }
+
+  private preferredJwtAlg(publicJwk: PublicJwk | Record<string, unknown>): string {
+    const jwk = publicJwk as Record<string, unknown>;
+    const alg = String(jwk.alg ?? '').trim();
+    if (alg) {
+      return alg;
+    }
+    const kty = String(jwk.kty ?? '').toUpperCase();
+    const crv = String(jwk.crv ?? '').toUpperCase();
+    if (kty === 'EC' && crv === 'P-256') {
+      return 'ES256';
+    }
+    if (kty === 'EC' && crv === 'P-384') {
+      return 'ES384';
+    }
+    if (kty === 'RSA') {
+      return 'RS384';
+    }
+    return 'ES384';
+  }
+
+  // ---- Generic batch API --------------------------------------------------
+
+  /**
+   * POST a DIDComm bundle payload.
+   * This is the preferred high-level method for DIDComm submission of
+   * FHIR/API bundles (batch, transaction, message, etc.).
+   *
+   * Returns immediately with the HTTP response — pair with `pollUntilComplete` or use `submitAndPoll`.
+   */
+  public async submitBundle(
+    path: string,
+    payload: { thid?: string } & Record<string, unknown>,
+    options?: {
+      mode?: 'plain' | 'strict';
+      recipientEncryptionJwk?: PublicJwk;
+      walletContext?: WalletContext;
+    },
+  ): Promise<SubmitResponse> {
+    const mode = options?.mode ?? 'plain';
+    if (mode === 'strict') {
+      if (!options?.recipientEncryptionJwk || !options?.walletContext) {
+        throw new Error('submitBundle strict mode requires recipientEncryptionJwk and walletContext.');
+      }
+      return this.submitBatchEncrypted(path, payload, options.recipientEncryptionJwk, options.walletContext);
+    }
+    return this.submitBatch(path, payload);
+  }
+
+  /**
+   * @deprecated Use `submitBundle` instead.
+   *
+   * POST a DIDComm plaintext payload to a batch submit path.
+   * Use this for all `_batch` routes (family registration, observations, tasks, etc.).
+   * Content-Type: `application/didcomm-plaintext+json`.
+   *
+   * Returns immediately with the HTTP response — pair with `pollUntilComplete` or use `submitAndPoll`.
+   */
+  public async submitBatch(path: string, payload: unknown): Promise<SubmitResponse> {
+    const url = /^https?:\/\//.test(path)
+      ? path
+      : `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+    const result = await submitDidcomm({
+      mode: 'plain',
+      url,
+      payload: payload as Record<string, unknown>,
+      defaultHeaders: this.defaultHeaders,
+      bearerToken: this.bearerToken,
+      fetcher: (requestUrl: string, init: DidcommFetchInit) => fetch(requestUrl, init),
+    });
+    return { status: result.status, location: result.location, body: result.body };
+  }
+
+  /**
+   * Sign and encrypt a DIDComm payload (nested JWS-in-JWE) and POST to the given path.
+   * Content-Type: `application/didcomm-encrypted+json`.
+   *
+   * Flow: `payload JSON → ES384 compact JWS → RSA-OAEP-256/A256GCM compact JWE → POST`
+   *
+   * Requires a wallet provider and the recipient's RSA encryption JWK
+   * (e.g. from GW `.well-known/jwks.json` where `use === 'enc'`).
+   */
+  public async submitBatchEncrypted(
+    path: string,
+    payload: { thid?: string } & Record<string, unknown>,
+    recipientEncryptionJwk: PublicJwk,
+    walletContext: WalletContext,
+  ): Promise<SubmitResponse> {
+    if (!this.wallet) {
+      throw new Error('submitBatchEncrypted requires a configured wallet provider.');
+    }
+
+    const publicJwks = await this.wallet.getPublicJwks(walletContext);
+    const signingJwk = publicJwks.find((jwk) => jwk.use === 'sig' || jwk.alg === 'ES384') ?? publicJwks[0];
+
+    const url = /^https?:\/\//.test(path)
+      ? path
+      : `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+    const result = await submitDidcomm({
+      mode: 'strict',
+      url,
+      payload,
+      defaultHeaders: this.defaultHeaders,
+      bearerToken: this.bearerToken,
+      recipientEncryptionJwk,
+      signCompactJws: async (claims: Record<string, unknown>) =>
+        this.wallet!.signCompactJws(walletContext, {
+          header: {
+            typ: 'application/didcomm-signed+json',
+            alg: 'ES384',
+            ...(signingJwk?.kid ? { kid: signingJwk.kid } : {}),
+          },
+          claims,
+        }),
+      encryptCompactJwe: async (compactJws: string, recipientJwk: unknown) =>
+        this.wallet!.buildCompactJwe(walletContext, {
+          plaintext: compactJws,
+          recipientJwk: recipientJwk as PublicJwk,
+          contentType: 'JWS',
+        }),
+      fetcher: (requestUrl: string, init: DidcommFetchInit) => fetch(requestUrl, init),
+    });
+    return { status: result.status, location: result.location, body: result.body };
+  }
+
+  /**
+   * POST a plain JSON payload.
+   * Use for non-DIDComm routes (e.g. token exchange body, API key management).
+   * Content-Type: `application/json`.
+   */
   public async postJson(path: string, payload: unknown): Promise<SubmitResponse> {
     const response = await this.doPost(path, payload, 'application/json');
     const body = await this.parseResponseBody(response);
@@ -241,6 +1140,18 @@ export class DataspaceNodeClient {
     };
   }
 
+  /**
+   * Legacy JSON submit for non-bundle payloads (openid/token/resource JSON bodies).
+   * Keeps JSON flows explicit and semantically separated from DIDComm bundle flows.
+   */
+  public async submitLegacyJson(path: string, payload: unknown): Promise<SubmitResponse> {
+    return this.postJson(path, payload);
+  }
+
+  /**
+   * POST a multipart/form-data payload.
+   * Use for file upload endpoints. Prefer `uploadConversionFile` for DataConversion uploads.
+   */
   public async postFormData(path: string, formData: FormData): Promise<SubmitResponse> {
     const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
     const headers: Record<string, string> = {
@@ -266,6 +1177,16 @@ export class DataspaceNodeClient {
     };
   }
 
+  /**
+   * Upload a file to a DataConversion endpoint.
+   * Wraps `postFormData` with sensible defaults for file field naming and multipart encoding.
+   *
+   * @param params.path - Use `conversionUploadPath(ctx, softwareId, sourceFormat)`.
+   * @param params.fileName - File name including extension (e.g. `data.xlsx`).
+   * @param params.fileContent - File bytes (Blob, Buffer, Uint8Array, or ArrayBuffer).
+   * @param params.fileFieldName - Form field name for the file. Defaults to `'file'`.
+   * @param params.fields - Additional form string fields to include.
+   */
   public async uploadConversionFile(params: {
     path: string;
     fileName: string;
@@ -288,14 +1209,39 @@ export class DataspaceNodeClient {
     return this.postFormData(params.path, form);
   }
 
-  public async pollBatchResponse(path: string, request: AsyncPollRequest): Promise<{ status: number; body: unknown }> {
+  /**
+   * Single poll attempt against a `_batch-response` or `_*-response` path.
+   * Returns HTTP 202 while the job is still processing, 200 (or other) when done.
+   * Prefer `pollUntilComplete` for automatic retry loops.
+   */
+  public async pollBatchResponse(
+    path: string,
+    request: AsyncPollRequest,
+  ): Promise<{ status: number; body: unknown; retryAfterMs?: number }> {
     const response = await this.doPost(path, request, 'application/json');
     return {
       status: response.status,
       body: await this.parseResponseBody(response),
+      retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
     };
   }
 
+  /**
+   * Submit a DIDComm batch payload and poll until the async job completes.
+   * Convenience wrapper around `submitBatch` + `pollUntilComplete`.
+   *
+   * Requires `payload.thid` to be set (used as the poll correlation key).
+   * Use `createDidcommPlainMessage` from `builders.ts` to build the payload with a `thid`.
+   *
+   * @example
+   * const result = await client.submitAndPoll(
+   *   client.individualFamilyOrganizationBatchPath(ctx),
+   *   client.individualFamilyOrganizationPollPath(ctx),
+   *   payload,
+   *   { timeoutMs: 30_000, intervalMs: 2_000 },
+   * );
+   * // result.poll.status === 200 on success
+   */
   public async submitAndPoll(
     submitPath: string,
     pollPath: string,
@@ -313,6 +1259,958 @@ export class DataspaceNodeClient {
     return { submit, poll };
   }
 
+  /**
+   * Create scheduled phone reminder Task entries through canonical Task `_batch` routes.
+   * This high-level helper accepts business parameters and internally builds flat
+   * FHIR-style claims under `resource.meta.claims`.
+   *
+   * `description` is the Task title.
+   * `reminderSummary` is the contextual summary of what the reminder refers to
+   * (appointment, medication schedule, or another event), mapped to `based-on-display`.
+   */
+  public async createPhoneReminderTasks(
+    ctx: RouteContext | undefined,
+    input: CreatePhoneReminderTasksInput,
+    options?: PollOptions,
+  ): Promise<SubmitAndPollResult> {
+    const routeCtx = this.requireRouteContext(ctx);
+    const windows = Array.isArray(input.windows) ? input.windows : [];
+    if (!windows.length) {
+      throw new Error('createPhoneReminderTasks requires at least one reminder window.');
+    }
+    if (!input.subjectRef || !input.ownerRef || !input.focusRef) {
+      throw new Error('createPhoneReminderTasks requires subjectRef, ownerRef and focusRef.');
+    }
+
+    const thid = `task-reminder-${randomUUID()}`;
+    const maxAttempts = Number.isFinite(input.maxAttempts) ? Math.max(1, Math.floor(Number(input.maxAttempts))) : 3;
+    const description = String(input.description || 'Reminder phone call').trim() || 'Reminder phone call';
+    const reminderSummary = String(input.reminderSummary || input.appointmentSummary || '').trim();
+    const dataType = String(input.dataType || 'Task').trim() || 'Task';
+
+    const data = windows.map((window) => {
+      const offsetMinutes = Math.max(0, Math.floor(Number(window.offsetMinutes)));
+      const remindAt = String(window.remindAt || '').trim();
+      if (!remindAt) {
+        throw new Error('createPhoneReminderTasks requires remindAt in every window.');
+      }
+
+      const taskIdSeed = [
+        routeCtx.tenantId,
+        routeCtx.jurisdiction,
+        routeCtx.sector,
+        input.subjectRef,
+        input.ownerRef,
+        input.focusRef,
+        remindAt,
+        String(offsetMinutes),
+      ].join('|');
+      const taskId = `task-${createHash('sha256').update(taskIdSeed).digest('hex').slice(0, 24)}`;
+
+      const claims: Record<string, string> = {
+        '@context': 'org.hl7.fhir.api',
+        id: taskId,
+        status: 'scheduled',
+        subject: input.subjectRef,
+        owner: input.ownerRef,
+        focus: input.focusRef,
+        'execution-period-start': remindAt,
+        channel: 'phone',
+        'trigger-type': 'phone-call',
+        'timing-repeat-offset': String(offsetMinutes),
+        'max-attempts': String(maxAttempts),
+      };
+
+      if (input.locale) claims.language = String(input.locale);
+      if (input.subjectDisplay) claims['subject-display'] = String(input.subjectDisplay);
+      if (reminderSummary) claims['based-on-display'] = reminderSummary;
+      if (input.notificationPhone) claims['subject-phone'] = String(input.notificationPhone);
+      if (input.controllerPhone) claims['owner-phone'] = String(input.controllerPhone);
+      if (input.callSid) claims['communication-request'] = String(input.callSid);
+
+      return {
+        type: dataType,
+        request: { method: 'POST' },
+        resource: {
+          resourceType: 'Task',
+          id: taskId,
+          description,
+          meta: { claims },
+        },
+      };
+    });
+
+    const payload = createDidcommPlainMessage({
+      iss: routeCtx.tenantId,
+      aud: routeCtx.tenantId,
+      thid,
+      body: { data },
+    });
+
+    return this.submitAndPoll(
+      this.individualTaskBatchPath(routeCtx),
+      this.individualTaskPollPath(routeCtx),
+      payload,
+      options ?? { timeoutMs: 20_000, intervalMs: 1_000 },
+    );
+  }
+
+  /** Endpoint path for medication overlap pre-check (planned GW contract). */
+  public individualMedicationOverlapCheckPath(ctx: RouteContext): string {
+    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.api', 'MedicationStatement', '_overlap-check');
+  }
+
+  /**
+   * Pre-create overlap check for medication intake schedules.
+   * TODO: Requires GW endpoint implementation (`MedicationStatement/_overlap-check`).
+   */
+  public async checkMedicationScheduleOverlap(
+    ctx: RouteContext,
+    input: MedicationOverlapCheckInput,
+  ): Promise<SubmitResponse> {
+    const payload = createDidcommPlainMessage({
+      iss: ctx.tenantId,
+      aud: ctx.tenantId,
+      thid: `med-overlap-${randomUUID()}`,
+      body: input as unknown as Record<string, unknown>,
+    });
+    return this.submitBatch(this.individualMedicationOverlapCheckPath(ctx), payload);
+  }
+
+  /**
+   * High-level helper for medication reminder creation.
+   * This creates one Task per explicit intake time and delegates reminder execution to GW daemon.
+   * TODO: recurring interval expansion + overlap policy should be finalized in GW endpoint contract.
+   */
+  public async createMedicationReminderTasks(
+    ctx: RouteContext,
+    input: MedicationRegistrationInput,
+    options?: PollOptions,
+  ): Promise<SubmitAndPollResult> {
+    const claims = (input.claims || {}) as Record<string, unknown>;
+    const claimStart = String(
+      claims[MedicationStatementClaimsFhirApiExtended.TimingBoundsPeriodStart] ||
+      claims['MedicationStatement.timing-bounds-period-start'] ||
+      claims[MedicationStatementClaimsFhirApi.Effective] ||
+      claims['MedicationStatement.effective'] ||
+      claims['DosageDetails.start'] ||
+      claims['MedicationDetails.start'] ||
+      '',
+    ).trim();
+    const claimTimeOfDay =
+      claims[MedicationStatementClaimsFhirApiExtended.TimingTimeOfDay] ??
+      claims['MedicationStatement.timing-timeofday'] ??
+      claims['Timing.repeat.timeOfDay'] ??
+      claims['Timing.repeat.time-of-day'];
+    const claimTimes = Array.isArray(claimTimeOfDay)
+      ? claimTimeOfDay
+      : typeof claimTimeOfDay === 'string'
+        ? claimTimeOfDay.split(',').map((v) => v.trim()).filter(Boolean)
+        : [];
+
+    const times = (Array.isArray(input.intakeTimes) ? input.intakeTimes : [])
+      .concat(claimTimes.map((hhmm) => ({ hhmm: String(hhmm) })));
+    if (!times.length) {
+      throw new Error('createMedicationReminderTasks requires at least one intake time.');
+    }
+
+    const startDate = String(input.startDate || claimStart || '').trim();
+    if (!startDate) {
+      throw new Error('createMedicationReminderTasks requires startDate.');
+    }
+
+    const windows = times.map((t) => {
+      const hhmm = String(t.hhmm || '').trim();
+      const remindAt = `${startDate}T${hhmm}:00.000Z`;
+      return { offsetMinutes: 0, remindAt };
+    });
+
+    const medicationDescription = String(
+      input.medicationDescription ||
+      claims[MedicationStatementClaimsFhirApi.Medication] ||
+      claims['MedicationStatement.medication'] ||
+      claims['MedicationStatement.medication-display'] ||
+      'Medication',
+    ).trim();
+    const doseValue = String(
+      input.doseValue ||
+      claims[MedicationStatementClaimsFhirApiExtended.DoseQuantityValue] ||
+      claims['MedicationStatement.dose-quantity-value'] ||
+      claims['Dosage.quantity-value'] ||
+      '',
+    ).trim();
+    const doseUnitOrFormCode = String(
+      input.doseUnitOrFormCode ||
+      claims[MedicationStatementClaimsFhirApiExtended.DoseQuantityUnit] ||
+      claims['MedicationStatement.dose-quantity-unit'] ||
+      claims[MedicationStatementClaimsFhirApiExtended.DoseType] ||
+      claims['MedicationStatement.dose-type'] ||
+      claims['Dosage.quantity-unit'] ||
+      claims['Dosage.form'] ||
+      '',
+    ).trim();
+
+    const summary = `${medicationDescription} ${doseValue}${doseUnitOrFormCode ? ` ${doseUnitOrFormCode}` : ''}`.trim();
+    return this.createPhoneReminderTasks(
+      ctx,
+      {
+        windows,
+        locale: input.locale,
+        subjectRef: input.subjectRef,
+        ownerRef: input.ownerRef,
+        focusRef: `MedicationStatement/${createHash('sha256').update(summary + startDate).digest('hex').slice(0, 24)}`,
+        subjectDisplay: medicationDescription,
+        reminderSummary: summary,
+        notificationPhone: input.notificationPhone,
+        controllerPhone: input.controllerPhone,
+        description: 'Medication reminder',
+        maxAttempts: input.maxAttempts,
+      },
+      options,
+    );
+  }
+
+  /**
+   * Search for an existing family Organization registration by phone + usualname.
+   * Submits to `individual/org.schema/Organization/_search`, polls for the result, and
+   * parses the bundle entry into a `FamilyOrganizationSummary`.
+   *
+   * Returns `null` when no matching registration exists.
+   */
+  public async searchFamilyOrganization(
+    ctx: RouteContext | undefined,
+    filters: { controllerPhone: string; usualname: string; birthDate?: string },
+    options?: PollOptions,
+  ): Promise<FamilyOrganizationSummary | null> {
+    const routeCtx = this.requireRouteContext(ctx);
+    const thid = `search-${randomUUID()}`;
+    const claims: Record<string, unknown> = {
+      'org.schema.Organization.owner.telephone': filters.controllerPhone,
+      'org.schema.Organization.alternateName': filters.usualname,
+      'org.schema.Service.category': routeCtx.sector,
+    };
+    if (filters.birthDate) {
+      claims['org.schema.Organization.foundingDate'] = filters.birthDate;
+    }
+
+    const payload = {
+      jti: randomUUID(),
+      thid,
+      iss: routeCtx.tenantId,
+      aud: routeCtx.tenantId,
+      type: 'application/api+json',
+      body: {
+        data: [{
+          type: 'Family-search-v1.0',
+          meta: { claims }, // legacy compatibility
+          resource: { meta: { claims } },
+        }],
+      },
+    };
+
+    const result = await this.submitAndPoll(
+      this.individualFamilyOrganizationSearchPath(routeCtx),
+      this.individualFamilyOrganizationSearchPollPath(routeCtx),
+      payload,
+      options ?? { timeoutMs: 20_000, intervalMs: 1_000 },
+    );
+
+    if (result.poll.status !== 200) return null;
+    const entry = (result.poll.body as any)?.body?.data?.[0];
+    if (!entry) return null;
+
+    const status = entry.meta?.claims?.['org.schema.FamilyRegistration.status'] as FamilyRegistrationStatus | undefined;
+    if (!status || status === 'not_found') return null;
+
+    const subjectInfo: any = {
+      identifierType: entry.meta?.claims?.['org.schema.Organization.identifier.additionalType'] as string | undefined,
+      identifierValue: entry.meta?.claims?.['org.schema.Organization.identifier.value'] as string | undefined,
+      nickname: entry.meta?.claims?.['org.schema.Organization.alternateName'] as string | undefined,
+      birthDate: entry.meta?.claims?.['org.schema.Organization.foundingDate'] as string | undefined,
+      telephone: entry.meta?.claims?.['org.schema.Organization.owner.telephone'] as string | undefined,
+    };
+
+    return {
+      status,
+      offerId: entry.meta?.claims?.['org.schema.Offer.identifier'] as string | undefined,
+      organizationId: entry.resource?.id as string | undefined,
+      subjectInfo,
+    };
+  }
+
+  /**
+   * Activate tenant organization in GW from ICA-derived proof.
+   */
+  public async activateOrganizationInGatewayFromIcaProof(
+    ctx: HostRouteContext | undefined,
+    input: GatewayOrganizationActivationInput,
+    options?: PollOptions,
+  ): Promise<SubmitAndPollResult> {
+    if (!input?.vpToken) {
+      throw new Error('activateOrganizationInGatewayFromIcaProof requires vpToken.');
+    }
+
+    const claims: Record<string, unknown> = {
+      '@context': 'org.schema',
+      vp_token: input.vpToken,
+      ...(input.additionalClaims || {}),
+    };
+    const requestedMembers = Number.isFinite(Number(input.numberOfMembers))
+      ? Math.max(1, Math.floor(Number(input.numberOfMembers)))
+      : 2;
+    // Keep gateway-facing claim stable while exposing a generic SDK input.
+    claims['org.schema.Organization.numberOfEmployees'] = requestedMembers;
+    if (input.organizationVc) claims['org.schema.OrganizationCredential.jwt'] = input.organizationVc;
+    if (input.legalRepresentativeVc) {
+      claims['org.schema.LegalRepresentativeCredential.jwt'] = input.legalRepresentativeVc;
+    }
+    if (input.regulatoryEvidence) claims['org.schema.Organization.regulatoryEvidence'] = input.regulatoryEvidence;
+
+    const payload = createDidcommPlainMessage({
+      iss: 'did:web:controller.example.com',
+      aud: 'did:web:host.example.com',
+      body: {
+        // GW activation parser expects proof material at top-level DIDComm body.
+        vp_token: input.vpToken,
+        ...(input.organizationVc ? { organizationCredential: input.organizationVc } : {}),
+        ...(input.legalRepresentativeVc ? { representativeCredential: input.legalRepresentativeVc } : {}),
+        data: [
+          {
+            type: 'Organization-activation-request-v1.0',
+            meta: { claims }, // legacy compatibility
+            resource: { meta: { claims } },
+          },
+        ],
+      },
+    });
+
+    return this.submitAndPoll(
+      this.hostRegistryOrganizationActivatePath(ctx),
+      this.hostRegistryOrganizationActivatePollPath(ctx),
+      payload,
+      options,
+    );
+  }
+
+  /**
+   * Friendly wrapper for legal organization activation.
+   * Accepts one object and seconds-based polling options for integrator ergonomics.
+   */
+  public async activateOrganizationInGatewaySimple(
+    input: GatewayOrganizationActivationSimpleInput,
+  ): Promise<SubmitAndPollResult> {
+    const serviceProviderDidWeb = String(input.serviceProviderDidWeb || '').trim();
+    const serviceProviderUrl = String(input.serviceProviderUrl || '').trim();
+    const controllerEmail = String(input.controllerEmail || '').trim();
+    const controllerTelephone = String(input.controllerTelephone || '').trim();
+    const controllerRole = String(input.controllerRole || '').trim();
+    const resolvedServiceDid = toDidWebFromUrlOrHost(serviceProviderDidWeb || serviceProviderUrl);
+    if (!resolvedServiceDid) {
+      throw new Error('activateOrganizationInGatewaySimple requires serviceProviderDidWeb or serviceProviderUrl.');
+    }
+    if (!controllerEmail && !controllerTelephone) {
+      throw new Error('activateOrganizationInGatewaySimple requires controllerEmail or controllerTelephone.');
+    }
+    if (!controllerRole) {
+      throw new Error('activateOrganizationInGatewaySimple requires controllerRole.');
+    }
+    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
+
+    const hostCtx = this.requireHostRouteContext(
+      input.jurisdiction && input.sector
+        ? { jurisdiction: input.jurisdiction, sector: input.sector }
+        : undefined,
+    );
+    const implicitClaims: Record<string, unknown> = {
+      'org.schema.Service.category': hostCtx.sector,
+      'org.schema.Service.identifier': resolvedServiceDid,
+      ...(serviceProviderUrl ? { 'org.schema.Service.url': serviceProviderUrl } : {}),
+      [ClaimsPersonSchemaorg.hasOccupation]: controllerRole,
+      ...(controllerEmail ? { [ClaimsPersonSchemaorg.email]: controllerEmail } : {}),
+      ...(controllerTelephone ? { [ClaimsPersonSchemaorg.telephone]: controllerTelephone } : {}),
+    };
+
+    const activation = await this.activateOrganizationInGatewayFromIcaProof(
+      hostCtx,
+      {
+        vpToken: input.vpToken,
+        numberOfMembers: input.numberOfMembers,
+        organizationVc: input.organizationVc,
+        legalRepresentativeVc: input.legalRepresentativeVc,
+        regulatoryEvidence: input.regulatoryEvidence,
+        additionalClaims: { ...implicitClaims, ...(input.additionalClaims || {}) },
+      },
+      pollOptions,
+    );
+    this.assertFirstDidcommEntrySuccess(activation, 'activateOrganizationInGatewaySimple');
+    return activation;
+  }
+
+  /**
+   * Friendly wrapper for legal organization Order confirmation.
+   * Accepts one object and builds payload/paths internally.
+   */
+  public async confirmLegalOrganizationOrderSimple(
+    input: LegalOrganizationOrderSimpleInput,
+  ): Promise<SubmitAndPollResult> {
+    if (!String(input.offerId || '').trim()) {
+      throw new Error('confirmLegalOrganizationOrderSimple requires offerId.');
+    }
+    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
+    const hostCtx = this.requireHostRouteContext(
+      input.jurisdiction && input.sector
+        ? { jurisdiction: input.jurisdiction, sector: input.sector }
+        : undefined,
+    );
+
+    const claims: Record<string, unknown> = {
+      '@context': 'org.schema',
+      'Order.acceptedOffer.identifier': input.offerId,
+      ...(input.additionalClaims || {}),
+    };
+    const payload = createDidcommPlainMessage({
+      iss: 'did:web:controller.example.com',
+      aud: 'did:web:host.example.com',
+      thid: `order-${randomUUID()}`,
+      body: {
+        data: [{
+          type: input.dataType || 'Organization-order-request-v1.0',
+          meta: { claims }, // legacy compatibility
+          resource: { meta: { claims } },
+        }],
+      },
+    });
+
+    const order = await this.submitAndPoll(
+      this.hostRegistryOrderBatchPath(hostCtx),
+      this.hostRegistryOrderPollPath(hostCtx),
+      payload,
+      pollOptions,
+    );
+    this.assertFirstDidcommEntrySuccess(order, 'confirmLegalOrganizationOrderSimple');
+    return order;
+  }
+
+  /**
+   * Normalize GW async response into DIDComm message body.
+   *
+   * Transport note:
+   * - GW poll responses are HTTP JSON envelopes
+   * - business payload lives inside DIDComm `body`
+   *
+   * This helper abstracts envelope differences so consumers do not depend on
+   * raw `poll.body.body` paths.
+   */
+  public getDidcommMessageBodyFromResponse(
+    result: SubmitAndPollResult | PollResult | unknown,
+  ): Record<string, unknown> | undefined {
+    const pollBody = (result as any)?.poll?.body ?? (result as any)?.body ?? result;
+    const didcommBody = (pollBody as any)?.body;
+    if (didcommBody && typeof didcommBody === 'object') return didcommBody as Record<string, unknown>;
+    if (pollBody && typeof pollBody === 'object' && Array.isArray((pollBody as any)?.data)) {
+      return pollBody as Record<string, unknown>;
+    }
+    return undefined;
+  }
+
+  /**
+   * Return first DIDComm business entry from a submit/poll result.
+   */
+  public getFirstDidcommDataEntryFromResponse(
+    result: SubmitAndPollResult | PollResult | unknown,
+  ): Record<string, unknown> | undefined {
+    const body = this.getDidcommMessageBodyFromResponse(result);
+    const entry = (body as any)?.data?.[0];
+    return entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
+  }
+
+  /**
+   * Extract `org.schema.Offer.identifier` from a submit/poll result.
+   *
+   * This helper normalizes canonical and legacy claim locations.
+   */
+  public getOfferIdFromResponse(result: SubmitAndPollResult | PollResult | unknown): string | undefined {
+    const entry = this.getFirstDidcommDataEntryFromResponse(result);
+    const offerId = String(
+      (entry as any)?.meta?.claims?.[ClaimsOfferSchemaorg.identifier]
+      || (entry as any)?.resource?.meta?.claims?.[ClaimsOfferSchemaorg.identifier]
+      || '',
+    ).trim();
+    return offerId || undefined;
+  }
+
+  /**
+   * Extract a UI-ready Offer preview from activation/registration responses.
+   */
+  public getOfferPreviewFromResponse(result: SubmitAndPollResult | PollResult | unknown): OfferPreview {
+    const entry = this.getFirstDidcommDataEntryFromResponse(result) as any;
+    const claims = entry?.meta?.claims || entry?.resource?.meta?.claims || {};
+    const seatsRaw = claims[ClaimsOfferSchemaorg.eligibleQuantityValue];
+    const seats =
+      typeof seatsRaw === 'number'
+        ? seatsRaw
+        : (typeof seatsRaw === 'string' && seatsRaw.trim() ? Number(seatsRaw) : undefined);
+    return {
+      offerId: this.getOfferIdFromResponse(result),
+      amount: claims[ClaimsOfferSchemaorg.price],
+      currency: claims[ClaimsOfferSchemaorg.priceCurrency],
+      seats: Number.isFinite(seats as number) ? seats : undefined,
+      planName: claims[ClaimsOfferSchemaorg.itemOfferedName],
+      sku: claims[ClaimsOfferSchemaorg.itemOfferedSku],
+      paymentMethod: claims[ClaimsOfferSchemaorg.acceptedPaymentMethod],
+      checkoutUrl: claims[ClaimsOfferSchemaorg.checkoutPageURLTemplate],
+    };
+  }
+
+  /**
+   * Alias of `getOfferPreviewFromResponse` with business naming.
+   */
+  public getOfferInfoFromResponse(result: SubmitAndPollResult | PollResult | unknown): OfferInfo {
+    return this.getOfferPreviewFromResponse(result);
+  }
+
+  /**
+   * Extract activation code from response payload or claims.
+   * Supports common response shapes used in onboarding and license issuance flows.
+   */
+  public getActivationCodeFromResponse(result: SubmitAndPollResult | PollResult | unknown): string | undefined {
+    const root = (result as any)?.poll?.body || (result as any)?.body || {};
+    const byBody =
+      String(root?.activationCode || root?.body?.activationCode || '').trim();
+    if (byBody) return byBody;
+
+    const entry = this.getFirstDidcommDataEntryFromResponse(result) as any;
+    const claims = entry?.meta?.claims || entry?.resource?.meta?.claims || {};
+    const byClaims = String(
+      claims['org.schema.IndividualProduct.serialNumber']
+      || claims['org.schema.Offer.serialNumber']
+      || claims['activationCode']
+      || '',
+    ).trim();
+    return byClaims || undefined;
+  }
+
+  /**
+   * Throws when first DIDComm entry contains a business-level error status.
+   */
+  public assertFirstDidcommEntrySuccess(
+    result: SubmitAndPollResult | PollResult | unknown,
+    contextLabel: string,
+  ): void {
+    const entry = this.getFirstDidcommDataEntryFromResponse(result) as any;
+    const responseStatusRaw = entry?.response?.status;
+    const responseStatus = Number(responseStatusRaw);
+    if (!Number.isFinite(responseStatus) || responseStatus < 400) return;
+
+    const diagnostics =
+      String(
+        entry?.response?.outcome?.issue?.[0]?.diagnostics
+        || entry?.response?.outcome?.issue?.[0]?.details?.text
+        || '',
+      ).trim();
+    throw new Error(
+      `${contextLabel} failed (business status=${responseStatus})${diagnostics ? `: ${diagnostics}` : ''}`,
+    );
+  }
+
+  /**
+   * Activate employee/member device by activation code exchange + DCR registration.
+   *
+   * Step 1. Exchange activation code using user id_token to obtain an initial access token.
+   * Step 2. Register device keys through Device/_dcr authorized by that initial token.
+   */
+  public async activateEmployeeDeviceWithActivationCode(
+    ctx: RouteContext | undefined,
+    input: EmployeeDeviceActivationInput,
+  ): Promise<EmployeeDeviceActivationResult> {
+    const exchangePayload = {
+      thid: `exchange-${randomUUID()}`,
+      subject_token: input.activationCode,
+    };
+
+    const exchangeClient = new DataspaceNodeClient({
+      baseUrl: this.baseUrl,
+      bearerToken: input.idToken,
+      defaultHeaders: this.defaultHeaders,
+      wallet: this.wallet,
+    });
+
+    const exchange = await exchangeClient.submitAndPoll(
+      this.identityTokenExchangePath(ctx),
+      this.identityTokenExchangePollPath(ctx),
+      exchangePayload,
+      input.pollOptions,
+    );
+
+    const exchangeBody = (exchange.poll.body as any)?.body || (exchange.poll.body as any) || {};
+    const initialAccessToken = String(
+      exchangeBody.initial_access_token || exchangeBody.access_token || '',
+    ).trim();
+    if (!initialAccessToken) {
+      throw new Error('activateEmployeeDeviceWithActivationCode: missing initial_access_token in exchange response.');
+    }
+
+    const dcrPayload = {
+      thid: `dcr-${randomUUID()}`,
+      ...input.dcrPayload,
+    };
+
+    const dcrClient = new DataspaceNodeClient({
+      baseUrl: this.baseUrl,
+      bearerToken: initialAccessToken,
+      defaultHeaders: this.defaultHeaders,
+      wallet: this.wallet,
+    });
+
+    const dcr = await dcrClient.submitAndPoll(
+      this.identityDeviceDcrPath(ctx),
+      this.identityDeviceDcrPollPath(ctx),
+      dcrPayload,
+      input.pollOptions,
+    );
+
+    return {
+      initialAccessToken,
+      exchange,
+      dcr,
+    };
+  }
+
+  /**
+   * Friendly wrapper for employee/member device activation.
+   * Uses one object, seconds-based polling, and constructor ctx fallback.
+   */
+  public async activateEmployeeDeviceWithActivationCodeSimple(
+    input: EmployeeDeviceActivationSimpleInput,
+  ): Promise<EmployeeDeviceActivationResult> {
+    const routeCtx = this.requireRouteContext(
+      input.tenantId && input.jurisdiction && input.sector
+        ? { tenantId: input.tenantId, jurisdiction: input.jurisdiction, sector: input.sector }
+        : undefined,
+    );
+    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
+
+    return this.activateEmployeeDeviceWithActivationCode(
+      routeCtx,
+      {
+        activationCode: input.activationCode,
+        idToken: input.idToken,
+        dcrPayload: input.dcrPayload,
+        pollOptions,
+      },
+    );
+  }
+
+  /**
+   * UC 5.3 wrapper: create organization employee in entity Employee batch route.
+   */
+  public async createOrganizationEmployee(
+    ctx: RouteContext | undefined,
+    input: OrganizationEmployeeCreationInput,
+    options?: PollOptions,
+  ): Promise<SubmitAndPollResult> {
+    const routeCtx = this.requireRouteContext(ctx);
+    const payload = createDidcommPlainMessage({
+      iss: routeCtx.tenantId,
+      aud: routeCtx.tenantId,
+      thid: `employee-${randomUUID()}`,
+      body: {
+        data: [
+          {
+            type: input.dataType || 'Employee-create-request-v1.0',
+            meta: { claims: input.employeeClaims || {} }, // legacy compatibility
+            resource: { meta: { claims: input.employeeClaims || {} } },
+          },
+        ],
+      },
+    });
+
+    return this.submitAndPoll(
+      this.employeeBatchPath(routeCtx),
+      this.employeePollPath(routeCtx),
+      payload,
+      options,
+    );
+  }
+
+  /**
+   * UC 5.1 wrapper: bootstrap subject organization context via registration + optional order confirmation.
+   */
+  public async bootstrapSubjectOrganizationIndex(
+    ctx: RouteContext | undefined,
+    input: SubjectOrganizationBootstrapInput,
+  ): Promise<SubjectOrganizationBootstrapResult> {
+    const registrationPayload = {
+      thid: input.registrationPayload.thid || `family-org-${randomUUID()}`,
+      ...input.registrationPayload,
+    };
+
+    const registration = await this.submitAndPoll(
+      this.individualFamilyOrganizationBatchPath(ctx),
+      this.individualFamilyOrganizationPollPath(ctx),
+      registrationPayload,
+      input.pollOptions,
+    );
+
+    if (!input.confirmationPayload) {
+      return { registration };
+    }
+
+    const confirmationPayload = {
+      thid: input.confirmationPayload.thid || `family-order-${randomUUID()}`,
+      ...input.confirmationPayload,
+    };
+
+    const confirmation = await this.submitAndPoll(
+      this.individualFamilyOrderBatchPath(ctx),
+      this.individualFamilyOrderPollPath(ctx),
+      confirmationPayload,
+      input.pollOptions,
+    );
+
+    return { registration, confirmation };
+  }
+
+  /**
+   * Friendly wrapper (recommended step 1): register individual organization and return Offer.
+   */
+  public async startIndividualOrganizationSimple(
+    input: IndividualOrganizationBootstrapSimpleInput,
+  ): Promise<IndividualOrganizationStartSimpleResult> {
+    const routeCtx = this.requireRouteContext(
+      input.tenantId && input.jurisdiction && input.sector
+        ? { tenantId: input.tenantId, jurisdiction: input.jurisdiction, sector: input.sector }
+        : undefined,
+    );
+    const alternateName = String(input.alternateName || '').trim();
+    if (!alternateName) {
+      throw new Error('bootstrapIndividualOrganizationSimple requires alternateName.');
+    }
+    const controllerEmail = String(input.controllerEmail || '').trim();
+    const controllerTelephone = String(input.controllerTelephone || '').trim();
+    if (!controllerEmail && !controllerTelephone) {
+      throw new Error('bootstrapIndividualOrganizationSimple requires controllerEmail or controllerTelephone.');
+    }
+    const controllerRole = String(input.controllerRole || 'org.hl7.v3.RoleCode|RESPRSN').trim();
+
+    const claims: Record<string, unknown> = {
+      '@context': 'org.schema',
+      'org.schema.Organization.alternateName': alternateName,
+      'org.schema.Service.category': routeCtx.sector,
+      [ClaimsPersonSchemaorg.hasOccupation]: controllerRole,
+      ...(controllerEmail ? { [ClaimsPersonSchemaorg.email]: controllerEmail } : {}),
+      ...(controllerTelephone ? { [ClaimsPersonSchemaorg.telephone]: controllerTelephone } : {}),
+      ...(input.additionalClaims || {}),
+    };
+    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
+    const registrationPayload = createDidcommPlainMessage({
+      iss: routeCtx.tenantId,
+      aud: routeCtx.tenantId,
+      thid: `family-org-${randomUUID()}`,
+      body: {
+        data: [{
+          type: 'SubjectOrg-registration-form-v1.0',
+          meta: { claims },
+          resource: { meta: { claims } },
+        }],
+      },
+    });
+
+    const registration = await this.submitAndPoll(
+      this.individualFamilyOrganizationBatchPath(routeCtx),
+      this.individualFamilyOrganizationPollPath(routeCtx),
+      registrationPayload,
+      pollOptions,
+    );
+    this.assertFirstDidcommEntrySuccess(registration, 'startIndividualOrganizationSimple.registration');
+
+    const offerId = this.getOfferIdFromResponse(registration);
+    if (!offerId) {
+      throw new Error('startIndividualOrganizationSimple failed: missing offerId in registration response.');
+    }
+    return { registration, offerId, offerPreview: this.getOfferPreviewFromResponse(registration) };
+  }
+
+  /**
+   * Friendly wrapper (recommended step 2): confirm individual/family order from accepted offerId.
+   */
+  public async confirmIndividualOrganizationOrderSimple(
+    input: IndividualOrganizationConfirmOrderSimpleInput,
+  ): Promise<SubmitAndPollResult> {
+    const routeCtx = this.requireRouteContext(
+      input.tenantId && input.jurisdiction && input.sector
+        ? { tenantId: input.tenantId, jurisdiction: input.jurisdiction, sector: input.sector }
+        : undefined,
+    );
+    const offerId = String(input.offerId || '').trim();
+    if (!offerId) {
+      throw new Error('confirmIndividualOrganizationOrderSimple requires offerId.');
+    }
+    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
+    const orderClaims: Record<string, unknown> = {
+      '@context': 'org.schema',
+      'Order.acceptedOffer.identifier': offerId,
+    };
+    const confirmationPayload = createDidcommPlainMessage({
+      iss: routeCtx.tenantId,
+      aud: routeCtx.tenantId,
+      thid: `family-order-${randomUUID()}`,
+      body: {
+        data: [{
+          type: 'Family-order-request-v1.0',
+          meta: { claims: orderClaims },
+          resource: { meta: { claims: orderClaims } },
+        }],
+      },
+    });
+
+    const confirmation = await this.submitAndPoll(
+      this.individualFamilyOrderBatchPath(routeCtx),
+      this.individualFamilyOrderPollPath(routeCtx),
+      confirmationPayload,
+      pollOptions,
+    );
+    this.assertFirstDidcommEntrySuccess(confirmation, 'confirmIndividualOrganizationOrderSimple');
+    return confirmation;
+  }
+
+  /**
+   * Friendly wrapper (provisional): register + auto-confirm individual order.
+   * Prefer `startIndividualOrganizationSimple` + `confirmIndividualOrganizationOrderSimple`.
+   */
+  public async bootstrapIndividualOrganizationSimple(
+    input: IndividualOrganizationBootstrapSimpleInput,
+  ): Promise<IndividualOrganizationBootstrapSimpleResult> {
+    const started = await this.startIndividualOrganizationSimple(input);
+    const confirmation = await this.confirmIndividualOrganizationOrderSimple({
+      tenantId: input.tenantId,
+      jurisdiction: input.jurisdiction,
+      sector: input.sector,
+      offerId: started.offerId,
+      timeoutSeconds: input.timeoutSeconds,
+      intervalSeconds: input.intervalSeconds,
+    });
+    return {
+      registration: started.registration,
+      offerId: started.offerId,
+      confirmation,
+    };
+  }
+
+  /**
+   * UC 5.5 wrapper: import IPS/FHIR composition and update subject index context.
+   */
+  public async importIpsOrFhirAndUpdateIndex(
+    ctx: RouteContext | undefined,
+    input: IpsOrFhirImportInput,
+  ): Promise<SubmitAndPollResult> {
+    const routeCtx = this.requireRouteContext(ctx);
+    const payload = {
+      thid: input.compositionPayload.thid || `composition-${randomUUID()}`,
+      ...input.compositionPayload,
+    };
+
+    const submitPath = (input.format || 'r4') === 'api'
+      ? this.individualCompositionR4BatchPath(routeCtx).replace('/org.hl7.fhir.r4/', '/org.hl7.fhir.api/')
+      : this.individualCompositionR4BatchPath(routeCtx);
+    const pollPath = (input.format || 'r4') === 'api'
+      ? this.individualCompositionR4PollPath(routeCtx).replace('/org.hl7.fhir.r4/', '/org.hl7.fhir.api/')
+      : this.individualCompositionR4PollPath(routeCtx);
+
+    return this.submitAndPoll(submitPath, pollPath, payload, input.pollOptions);
+  }
+
+  /**
+   * UC 5.6 consent helper from minimal frontend fields.
+   * Builds canonical Consent claims and submits/polls the Consent batch.
+   */
+  public async grantProfessionalAccessSimple(
+    ctx: RouteContext | undefined,
+    input: GrantProfessionalAccessSimpleInput,
+  ): Promise<GrantProfessionalAccessSimpleResult> {
+    const routeCtx = this.requireRouteContext(ctx);
+    const built = buildConsentClaimsSimpleWithCid(
+      {
+        subjectDid: input.subjectDid,
+        subjectPhone: input.subjectPhone,
+        subjectGivenName: input.subjectGivenName,
+        actor: input.actor || {},
+        actorRole: input.actorRole,
+        purpose: input.purpose,
+        actions: input.actions,
+        consentIdentifier: input.consentIdentifier,
+        consentDate: input.consentDate,
+        decision: input.decision,
+        attachmentContentType: input.attachmentContentType,
+        attachmentBase64: input.attachmentBase64,
+      },
+      {
+        consentIdentifierFactory: () => `urn:uuid:${randomUUID()}`,
+      },
+    );
+
+    const thid = `consent-${randomUUID()}`;
+    const consentPayload = {
+      thid,
+      body: {
+        data: [
+          {
+            type: input.dataType || 'Consent-grant-request-v1.0',
+            meta: { claims: built.consentClaims }, // legacy compatibility
+            resource: { meta: { claims: built.consentClaims } },
+          },
+        ],
+      },
+    };
+    const consent = await this.submitAndPoll(
+      this.individualConsentR4BatchPath(routeCtx),
+      this.individualConsentR4PollPath(routeCtx),
+      consentPayload,
+      input.pollOptions,
+    );
+
+    return {
+      thid,
+      consent,
+      actorIdentifier: built.actorIdentifier,
+      subjectIdentifier: built.subjectIdentifier,
+      consentClaims: built.consentClaims,
+      claimsCid: built.claimsCid,
+    };
+  }
+
+  /**
+   * UC 5.7 wrapper: generate digital twin composition from subject data.
+   */
+  public async generateDigitalTwinFromSubjectData(
+    ctx: RouteContext | undefined,
+    input: DigitalTwinGenerationInput,
+  ): Promise<SubmitAndPollResult> {
+    const routeCtx = this.requireRouteContext(ctx);
+    const payload = {
+      thid: input.compositionPayload.thid || `digital-twin-${randomUUID()}`,
+      ...input.compositionPayload,
+    };
+
+    const submitPath = (input.format || 'r4') === 'api'
+      ? this.digitalTwinCompositionApiBatchPath(routeCtx)
+      : this.digitalTwinCompositionR4BatchPath(routeCtx);
+    const pollPath = (input.format || 'r4') === 'api'
+      ? this.digitalTwinCompositionApiPollPath(routeCtx)
+      : this.digitalTwinCompositionR4PollPath(routeCtx);
+
+    return this.submitAndPoll(submitPath, pollPath, payload, input.pollOptions);
+  }
+
+  /**
+   * Poll a `_*-response` path repeatedly until the status is no longer 202.
+   * Default: 60s timeout, 2s interval.
+   * Throws if timeout is exceeded.
+   *
+   * @param path - Poll path (e.g. `individualFamilyOrganizationPollPath(ctx)`).
+   * @param request - Must include `thid` matching the original submit payload.
+   * @param options - `timeoutMs` (default 60000) and `intervalMs` (default 2000).
+   */
   public async pollUntilComplete(path: string, request: AsyncPollRequest, options?: PollOptions): Promise<PollResult> {
     const timeoutMs = options?.timeoutMs ?? 60_000;
     const intervalMs = options?.intervalMs ?? 2_000;
@@ -335,14 +2233,17 @@ export class DataspaceNodeClient {
         throw new Error(`Polling timeout after ${attempts} attempts (${timeoutMs}ms).`);
       }
 
-      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      const waitMs = options?.intervalMs ?? result.retryAfterMs ?? intervalMs;
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
     }
   }
 
   // ---- Internal HTTP helpers ---------------------------------------------
 
   private async doPost(path: string, payload: unknown, contentType: string): Promise<Response> {
-    const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
+    const url = /^https?:\/\//.test(path)
+      ? path
+      : `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
 
     const headers: Record<string, string> = {
       ...this.defaultHeaders,
@@ -363,10 +2264,15 @@ export class DataspaceNodeClient {
 
   private async parseResponseBody(response: Response): Promise<unknown> {
     const contentType = response.headers.get('content-type') || '';
+    const raw = await response.text();
+    if (!raw) return {};
     if (contentType.includes('application/json') || contentType.includes('application/didcomm-plaintext+json')) {
-      return response.json().catch(() => ({}));
+      try {
+        return JSON.parse(raw);
+      } catch {
+        return {};
+      }
     }
-    const text = await response.text();
-    return text;
+    return raw;
   }
 }
