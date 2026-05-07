@@ -1,6 +1,6 @@
 {
   "name": "dataspace-client-sdk-node",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "Node.js SDK for DIDComm plain batch + async polling flows",
   "license": "Apache-2.0",
   "author": "Antifraud Services Inc.",
