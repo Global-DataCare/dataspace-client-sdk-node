@@ -70,7 +70,15 @@ const smart = await client.requestSmartTokenSimple({
   jurisdiction: profileContext.jurisdiction,
   sector: profileContext.sector,
   idToken: sessionContext.practitionerIdToken,
-  targetEndpoint: `smart:practitioner:${sessionContext.practitionerDidWeb}:ips-read`,
+  targetEndpoint: client.getEndpointId(
+    {
+      section: 'organization',
+      format: 'org.hl7.fhir.r4',
+      resourceType: 'Composition',
+      action: '_search',
+    },
+    sessionContext.practitionerDidWeb,
+  ),
   scopes: [
     'organization/Composition.rs',
     'organization/Consent.cruds',
@@ -87,7 +95,8 @@ IPS note:
 
 If your token endpoint requires `client_assertion` (`private_key_jwt`), the JWT must be signed with the practitioner's/controller's private key.
 
-Option A (recommended): SDK signs and sends `client_assertion` for you.
+Option A: SDK signs and sends `client_assertion` for you.
+Use this only when your deployment/client type allows SDK-managed signing in your backend runtime.
 
 ```ts
 const token = await client.authenticateBackendSmartStandard({
@@ -105,7 +114,8 @@ const token = await client.authenticateBackendSmartStandard({
 });
 ```
 
-Option B (manual): build/sign JWT yourself, then attach it in token request.
+Option B: build/sign JWT yourself, then attach it in token request.
+Use this when signature custody must remain in external wallet/KMS/HSM or when client profile requires manual assertion handling.
 
 ```ts
 const now = Math.floor(Date.now() / 1000);
@@ -165,7 +175,7 @@ const clientAssertion = await wallet.signCompactJws({
 ```
 
 For the current GW `identity/auth/_token` flow documented in this SDK, `requestSmartTokenSimple(...)` is id-token based.  
-Use `private_key_jwt` flow when your deployment exposes a standards token endpoint that requires `client_assertion`.
+Use `private_key_jwt` flow only when your deployment and client profile require `client_assertion`.
 
 ## 4) Call protected APIs with returned bearer
 

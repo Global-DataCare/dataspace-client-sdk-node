@@ -12,9 +12,13 @@ Security note:
 const started = await client.startIndividualOrganizationSimple({
   alternateName,
   controllerEmail,        // or controllerTelephone
-  controllerRole: 'org.hl7.v3.RoleCode|RESPRSN',
+  controllerRole: '|RESPRSN',
 });
 ```
+
+Role format note:
+- use `codingSystem|codeValue` (FHIR-style split by `|`).
+- if coding system is omitted, keep leading pipe and send only code value, for example `|RESPRSN`.
 
 ## 2) Show offer in UI and accept
 

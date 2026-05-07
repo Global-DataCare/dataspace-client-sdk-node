@@ -139,10 +139,10 @@ type CreatePhoneReminderTasksInput = {
   windows: Array<{ offsetMinutes: number; remindAt: string }>; // remindAt = ISO-8601
   locale?: string;
   callSid?: string;
-  notificationPhone?: string;
-  controllerPhone?: string;
-  subjectRef: string;   // e.g. 'Person/+34600000001'
-  ownerRef: string;     // e.g. 'RelatedPerson/+34699999999'
+  notificationPhone?: string; // optional legacy/fallback only
+  controllerPhone?: string;   // optional legacy/fallback only
+  subjectRef: string;   // e.g. 'Person/subject-uuid' or 'Person/mailto:subject@example.com'
+  ownerRef: string;     // e.g. 'RelatedPerson/controller-uuid' or 'RelatedPerson/mailto:controller@example.com'
   focusRef: string;     // e.g. 'Appointment/2026-05-10T10:00:00.000Z'
   reminderSummary?: string;
   description?: string;
@@ -252,7 +252,7 @@ const ctx: RouteContext = { tenantId: 'acme', jurisdiction: 'ES', sector: 'healt
 
 // Register or resume a family organization
 const payload = createDidcommPlainMessage({
-  iss: '+34600000001',
+  iss: 'mailto:controller@example.com',
   aud: 'did:web:api.acme.org',
   body: {
     data: [{
@@ -260,9 +260,9 @@ const payload = createDidcommPlainMessage({
       meta: {
         claims: {
           '@context': 'org.schema',
-          'org.schema.Organization.telephone': '+34611111111', // notification phone (subject)
-          'org.schema.Organization.creator': '+34600000001',   // controller phone
-          'org.schema.Organization.owner.telephone': '+34600000001', // controller (indexed)
+          'org.schema.Organization.email': 'subject@example.com', // subject contact (primary)
+          'org.schema.Organization.creator': 'mailto:controller@example.com', // controller (primary)
+          'org.schema.Organization.owner.email': 'controller@example.com', // controller (indexed)
           'org.schema.Organization.alternateName': 'Maria',          // usualname (indexed)
           'org.schema.Service.category': 'health-care',
           'org.schema.Organization.addressCountry': 'ES',
@@ -667,6 +667,8 @@ console.log(poll.status, poll.attempts);
 ### `createPhoneReminderTasks`
 
 Creates one reminder `Task` per reminder window via `individual/Task/_batch`.
+Primary identity channels are `subjectRef` and `ownerRef` (UUID/email/DID references).
+`notificationPhone` and `controllerPhone` are optional compatibility fields.
 
 Each window maps to one deterministic task ID (SHA-256 of routing context + refs + `remindAt`).
 
@@ -686,10 +688,8 @@ const result = await client.createPhoneReminderTasks(ctx, {
     { offsetMinutes: 60,    remindAt: '2026-05-10T09:00:00.000Z' }, // 1 hour before
   ],
   locale: 'es-ES',
-  notificationPhone: '+34611111111',
-  controllerPhone: '+34600000001',
-  subjectRef: 'Person/+34611111111',
-  ownerRef: 'RelatedPerson/+34600000001',
+  subjectRef: 'Person/subject-uuid',
+  ownerRef: 'RelatedPerson/controller-uuid',
   focusRef: 'Appointment/2026-05-10T10:00:00.000Z',
   reminderSummary: '10/05 10:00 | Hospital San Juan | Consulta cardiología',
   maxAttempts: 3,
@@ -702,7 +702,8 @@ console.log(result.poll.status); // 200 if all tasks created
 
 ### `searchFamilyOrganization`
 
-Search for an existing family organization by controller phone + usualname. Returns `null` when not found.
+Legacy helper: search an existing family organization by controller phone + usualname.
+For portal onboarding, use email-based registration flow docs (`PERSONAL_FLOW_STEP_BY_STEP.md`).
 
 ```ts
 searchFamilyOrganization(

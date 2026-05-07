@@ -184,7 +184,7 @@ app.post('/api/onboarding/personal/register', async (req, res) => {
     alternateName: req.body.alternateName,
     controllerEmail: req.body.controllerEmail,
     controllerTelephone: req.body.controllerTelephone,
-    controllerRole: req.body.controllerRole || 'org.hl7.v3.RoleCode|RESPRSN',
+    controllerRole: req.body.controllerRole || '|RESPRSN',
   });
   // Return offer to frontend for explicit acceptance UX.
   // Later, call confirmIndividualOrganizationOrderSimple({ offerId: started.offerId }).

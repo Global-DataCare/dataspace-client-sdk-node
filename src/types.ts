@@ -325,7 +325,7 @@ export type IndividualOrganizationBootstrapSimpleInput = {
   alternateName: string;
   controllerEmail?: string;
   controllerTelephone?: string;
-  controllerRole?: string; // default org.hl7.v3.RoleCode|RESPRSN
+  controllerRole?: string; // default |RESPRSN
   timeoutSeconds?: number;
   intervalSeconds?: number;
   additionalClaims?: Record<string, unknown>;
@@ -436,7 +436,15 @@ export type CreatePhoneReminderTasksInput = {
    * in backend task execution. Provide this only for audit/fallback/optimization.
    */
   controllerPhone?: string;
+  /**
+   * Canonical subject reference (preferred): UUID/resource reference, email-based ref, or DID ref.
+   * Example: `Person/subject-uuid`, `Person/mailto:subject@example.com`, `Person/did:web:...`.
+   */
   subjectRef: string;
+  /**
+   * Canonical owner/controller reference (preferred): UUID/resource reference, email-based ref, or DID ref.
+   * Example: `RelatedPerson/controller-uuid`, `RelatedPerson/mailto:controller@example.com`.
+   */
   ownerRef: string;
   focusRef: string;
   subjectDisplay?: string;
