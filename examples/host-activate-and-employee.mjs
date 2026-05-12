@@ -25,11 +25,13 @@ const activatePayload = createDidcommPlainMessage({
     data: [
       {
         type: 'Organization-activation-request-v1.0',
-        meta: {
-          claims: {
+        resource: {
+          meta: {
+            claims: {
             '@context': 'org.schema',
             'Organization.identifier': process.env.TENANT_URN || 'urn:example:tenant',
             vp_token: process.env.VP_TOKEN || '<vp-token-placeholder>',
+            },
           },
         },
       },
@@ -54,11 +56,13 @@ const employeePayload = createDidcommPlainMessage({
     data: [
       {
         type: 'Employee-registration-request-v1.0',
-        meta: {
-          claims: {
+        resource: {
+          meta: {
+            claims: {
             '@context': 'org.schema',
             [ClaimsPersonSchemaorg.email]: process.env.EMPLOYEE_EMAIL || 'doctor1@acme.org',
             [ClaimsPersonSchemaorg.hasOccupation]: process.env.EMPLOYEE_ROLE || 'ISCO-08|2211',
+            },
           },
         },
       },

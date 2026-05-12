@@ -184,7 +184,7 @@ app.post('/api/onboarding/personal/register', async (req, res) => {
     alternateName: req.body.alternateName,
     controllerEmail: req.body.controllerEmail,
     controllerTelephone: req.body.controllerTelephone,
-    controllerRole: req.body.controllerRole || '|RESPRSN',
+    controllerRole: req.body.controllerRole || '|RESPRSN', // "RESPRSN" = Responsible Party (ver https://terminology.hl7.org/CodeSystem-v3-RoleCode.html)
   });
   // Return offer to frontend for explicit acceptance UX.
   // Later, call confirmIndividualOrganizationOrderSimple({ offerId: started.offerId }).

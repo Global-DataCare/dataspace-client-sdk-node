@@ -16,9 +16,13 @@ const started = await client.startIndividualOrganizationSimple({
 });
 ```
 
+
 Role format note:
 - use `codingSystem|codeValue` (FHIR-style split by `|`).
 - if coding system is omitted, keep leading pipe and send only code value, for example `|RESPRSN`.
+
+**Nota sobre RESPRSN:**
+El código `RESPRSN` significa "Responsible Party" según el estándar FHIR. Puedes consultar la definición oficial en: [HL7 FHIR RoleCode - Responsible Party](https://terminology.hl7.org/CodeSystem-v3-RoleCode.html)
 
 ## 2) Show offer in UI and accept
 

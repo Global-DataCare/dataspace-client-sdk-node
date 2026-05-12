@@ -16,26 +16,32 @@
           "https://www.w3.org/ns/credentials/v2",
           "https://schema.org"
         ],
+        "credentialSubject": {
+          "@type": "Organization",
+          "address": {
+            "@type": "PostalAddress",
+            "addressCountry": "ES"
+          },
+          "id": "did:web:globaldatacare.es:health-care:organization:taxid:VATES-B00112233",
+          "legalName": "ORGANIZATION LEGAL NAME",
+          "taxID": "VATES-B00112233"
+        },
+        "id": "urn:globaldatacare:health-care:organization:vc:zKYrhQQducHobYkMWELfr6iKoHSzs1PyksMKH89pCu24TVHbd5igiCYJh59HqKBabtm3Ufp",
+        "issuer": "did:jwt:SW2oMXTepzmg54k9dsXayBJjQXdnSqqdnlDjpekhu1g",
+        "meta": {
+          "versionId": "zG9G8EnWDyrYK7i3ay3o5FJHvJRwhCRaaVKEaamu8REU3vbQH3roUWm1XS5LaQLnmDvzi"
+        },
         "type": [
           "VerifiableCredential",
           "OrganizationCredential"
         ],
-        "issuer": "did:web:localhost%3A3310",
-        "credentialSubject": {
-          "id": "did:web:globaldatacare.es:onehealth:organization:taxid:VATES-B00000000",
-          "@type": "Organization",
-          "legalName": "Example Data Provider SL",
-          "taxID": "VATES-B00000000",
-          "sameAs": "did:web:provider.example.org",
-          "url": "provider.example.org",
-          "alternateName": "example-provider",
-          "identifier": "did:web:globaldatacare.es:onehealth:organization:taxid:VATES-B00000000",
-          "identifierType": "TAX",
-          "identifierValue": "VATES-B00000000",
-          "address": {
-            "@type": "PostalAddress",
-            "addressCountry": "ES"
-          }
+        "validFrom": "2026-03-12T20:14:44.000Z",
+        "proof": {
+          "type": "JsonWebSignature2020",
+          "created": "2026-03-12T20:14:44.000Z",
+          "proofPurpose": "assertionMethod",
+          "verificationMethod": "did:jwt:SW2oMXTepzmg54k9dsXayBJjQXdnSqqdnlDjpekhu1g#SW2oMXTepzmg54k9dsXayBJjQXdnSqqdnlDjpekhu1g",
+          "jws": "ey..."
         }
       },
       {
@@ -43,25 +49,44 @@
           "https://www.w3.org/ns/credentials/v2",
           "https://schema.org"
         ],
+        "credentialSubject": {
+          "@type": "Person",
+          "familyName": "SURNAME1 SURNAME2",
+          "givenName": "GIVEN NAME",
+          "hasOccupation": {
+            "@type": "Occupation",
+            "identifier": "urn:ilo:ilostat:isco-08:1120",
+            "name": "LegalRepresentative"
+          },
+          "id": "did:web:controller.example.org",
+          "identifier": "IDCES-11223344",
+          "memberOf": {
+            "@type": "Organization",
+            "legalName": "ORGANIZATION LEGAL NAME",
+            "taxID": "VATES-B00112233"
+          },
+          "name": "GIVEN NAME SURNAME1 SURNAME2",
+          "nationality": "ES"
+        },
+        "id": "urn:globaldatacare:health-care:organization-representative:vc:zKYrhQQducHobYkMWELfr6iKoHSzs1PyksMKH89pCu24TVHbd5igiCYJh59HqKBabtm3Ufp",
+        "issuer": "did:jwt:SW2oMXTepzmg54k9dsXayBJjQXdnSqqdnlDjpekhu1g",
+        "meta": {
+          "versionId": "zG9G8EnWDyrYK7i3ay3o5FJHvJRwhCRaaVKEaamu8REU3vbQH3roUWm1XS5LaQLnmDvzi"
+        },
         "type": [
           "VerifiableCredential",
           "PersonCredential",
           "LegalRepresentativeCredential"
         ],
-        "issuer": "did:web:localhost%3A3310",
-        "credentialSubject": {
-          "id": "urn:person:identifier:IDCES-99999999R",
-          "@type": "Person",
-          "name": "Alex Example",
-          "identifier": "IDCES-99999999R",
-          "sameAs": "did:web:controller.example.org",
-          "memberOf": {
-            "@type": "Organization",
-            "taxID": "VATES-B00000000"
-          }
+        "validFrom": "2026-03-12T20:14:44.000Z",
+        "proof": {
+          "type": "JsonWebSignature2020",
+          "created": "2026-03-12T20:14:44.000Z",
+          "proofPurpose": "assertionMethod",
+          "verificationMethod": "did:jwt:SW2oMXTepzmg54k9dsXayBJjQXdnSqqdnlDjpekhu1g#SW2oMXTepzmg54k9dsXayBJjQXdnSqqdnlDjpekhu1g",
+          "jws": "ey..."
         }
       }
     ]
   }
 }
-

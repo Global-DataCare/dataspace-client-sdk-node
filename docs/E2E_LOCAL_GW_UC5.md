@@ -1,10 +1,10 @@
-# E2E Local GW UC5 (Reproducible, No Mocks)
+# E2E Local GW Use Cases (Tenant Org + Individual Indexing, Reproducible, No Mocks)
 
-This test runs a real UC5 chain against a locally running GW in demo mode:
+This test runs the real use-cases chain against a locally running GW in demo mode:
 
-1. Legal entity controller activates tenant (`Organization/_activate`).
-2. Individual controller bootstraps personal/individual organization (`Organization/_batch` + `Order/_batch`).
-3. Consent is created (`Consent/_batch`) with `organization/Composition.rs`.
+1. Tenant organization registration is activated from a signed PDF contract (`Organization/_activate`).
+2. Individual is registered in the personal indexing service provider tenant (`Organization/_batch` + `Order/_batch`).
+3. Consent is created (`Consent/_batch`) with `organization/Composition.rs?subject=...&section=*` or a narrower explicit section list.
 4. Professional requests SMART token and receives scoped token.
 
 Test file:
@@ -27,6 +27,8 @@ Default fixture included:
 
 3. Use a tenant id aligned with your activation proof (`TENANT_ID`).
 
+If `PROFESSIONAL_ID_TOKEN` is not provided, the test synthesizes an unsigned demo JWT with `sub`, `tenant_id`, and `email` claims so the local GW can complete the initial token exchange.
+
 ## Run
 
 ```bash
@@ -38,12 +40,12 @@ JURISDICTION=ES \
 SECTOR=health-care \
 HOST_REGISTRY_SECTOR=test \
 PROFESSIONAL_ID_TOKEN='eyJhbGciOiJub25lIiwidHlwIjoiSldUIn0.eyJzdWIiOiJwcm9mZXNzaW9uYWwifQ.demo' \
-npm run test:e2e:live-gw-uc5
+npm run test:e2e:live-use-cases
 ```
 
 ## Notes
 
 - This is a real integration test (no `fetch` mocks).
-- `_activate` in this E2E uses `vp_token` in payload (no Bearer header required by the test).
+- `_activate` in this E2E uses `vp_token` in payload; the HTTP bearer is transport-only and, by default, the test reuses the same `id_token` for that header if `AUTH_BEARER` is not set.
 - If `TENANT_ID` does not match activation proof context, downstream tenant-scoped steps can return `404`.
-- The scripted scope assertion verifies `organization/Composition.rs` is granted in SMART token response.
+- The scripted scope assertion verifies the pinned `organization/Composition.rs?subject=...` scope is granted in the SMART token response.

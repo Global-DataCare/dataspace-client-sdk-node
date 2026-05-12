@@ -1,6 +1,8 @@
-# E2E Bootstrap (Tenant + Controller)
+# Legacy E2E Bootstrap (Tenant + Controller)
 
-This flow prepares a tenant for frontend E2E tests (`apptemplate`) after ICA proof is available.
+This script was originally a bootstrap patch for validating call paths, including individual-user onboarding, permission setup, health data indexing, and more.
+
+It is not the canonical E2E flow for a web the portal. For the portal/controller path, use the ICA-first flow in `CONTROLLER_FLOW_STEP_BY_STEP.md` and `PORTAL_BACKEND_INTEGRATION_HANDOVER.md`.
 
 ## 1) What the script does
 
@@ -50,5 +52,5 @@ Optional:
 
 1. Start local stack (GW + ICA + dependencies).
 2. Obtain `vp_token` from ICA flow (frontend or node).
-3. Run this bootstrap script.
-4. Run `apptemplate` integration profile (`local-demo`, `local-docker`, or `cloud-staging`).
+3. Run this bootstrap script only when you need to exercise the older backend call path or smoke-test tenant setup.
+4. For portal E2E, follow the controller flow docs instead of this bootstrap.

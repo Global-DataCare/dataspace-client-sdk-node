@@ -80,7 +80,7 @@ const smart = await client.requestSmartTokenSimple({
     sessionContext.practitionerDidWeb,
   ),
   scopes: [
-    'organization/Composition.rs',
+    'organization/Composition.rs?subject=did:web:subject.example.com:individual:123&section=*',
     'organization/Consent.cruds',
     'organization/Communication.cruds',
   ],
@@ -88,7 +88,7 @@ const smart = await client.requestSmartTokenSimple({
 ```
 
 IPS note:
-- Access to IPS sections is authorized via scopes (for example `organization/Composition.rs`) and consent/policy checks.
+- Access to IPS sections is authorized via scopes (for example `organization/Composition.rs?subject=...&section=*`) and consent/policy checks.
 - Do not derive authorization from `targetEndpoint` or from a single endpoint selector.
 
 ## 3.1) Where JWT signing happens (`private_key_jwt`)
@@ -101,7 +101,7 @@ Use this only when your deployment/client type allows SDK-managed signing in you
 ```ts
 const token = await client.authenticateBackendSmartStandard({
   clientId: sessionContext.practitionerDidWeb,
-  scopes: ['organization/Composition.rs'],
+  scopes: ['organization/Composition.rs?subject=did:web:subject.example.com:individual:123&section=*'],
   targetEndpoint: `smart:practitioner:${sessionContext.practitionerDidWeb}:ips-read`,
   tokenUrl: `${profileContext.baseUrl}/token`,
   audience: `${profileContext.baseUrl}/token`,

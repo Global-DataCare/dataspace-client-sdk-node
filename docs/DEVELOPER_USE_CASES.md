@@ -25,9 +25,9 @@ const ctx = {
 };
 ```
 
-## UC5.1 Subject bootstrap (personal organization)
+## UC5.1 Subject bootstrap (individual indexing service provider tenant)
 
-Terminology note: `subject` names in methods/claims refer to the member (person/patient) orchestrated by a personal organization with controller/manager and associated members.
+Terminology note: `subject` names in methods/claims refer to the member (person/patient) orchestrated by the tenant's personal indexing service provider flow.
 
 Method: `bootstrapSubjectOrganizationIndex(ctx, input)`
 Test: [tests/client.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-subject-data.flow.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-subject-data.flow.test.mjs)
@@ -36,12 +36,12 @@ Test: [tests/client.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-clien
 const result = await client.bootstrapSubjectOrganizationIndex(ctx, {
   registrationPayload: {
     body: {
-      data: [{ type: 'Family-registration-form-v1.0', meta: { claims: { '@context': 'org.schema' } } }],
+      data: [{ type: 'Individual-registration-form-v1.0', meta: { claims: { '@context': 'org.schema' } } }],
     },
   },
   confirmationPayload: {
     body: {
-      data: [{ type: 'Family-order-request-v1.0', meta: { claims: { 'Order.acceptedOffer.identifier': 'urn:offer:123' } } }],
+      data: [{ type: 'Individual-order-request-v1.0', meta: { claims: { 'Order.acceptedOffer.identifier': 'urn:offer:123' } } }],
     },
   },
 });
@@ -251,3 +251,4 @@ await client.submitAndPoll(
 - FHIR resource identity: `resource.id` remains UUID.
 - FHIR version traceability: `resource.meta.versionId` stores CID of canonical FHIR resource version.
 - Claims traceability: `grantProfessionalAccessSimple(...)` now emits `resource.meta.claims["@id"]` as CID of canonical claims (excluding `@context`, `@type`, `@id`).
+- Claim payloads should be authored under `resource.meta.claims`; `meta.claims` is kept only as deprecated compatibility during migration.

@@ -1,5 +1,5 @@
 /**
- * UC5 Organization Onboarding — Flow scenario test.
+ * Use Cases Organization Onboarding — Flow scenario test.
  *
  * This test chains the full org onboarding sequence in one coordinated scenario:
  *   Step 1: activateOrganizationInGatewayFromIcaProof
@@ -24,7 +24,7 @@ function jsonResponse(body, status = 200) {
   });
 }
 
-test('UC5 org onboarding flow: activate org → create employee → activate device', async () => {
+test('Use cases org onboarding flow: activate org → create employee → activate device', async () => {
   const ctx = { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' };
 
   // ── Shared scenario state ──────────────────────────────────────────────────

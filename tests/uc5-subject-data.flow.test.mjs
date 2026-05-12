@@ -1,5 +1,5 @@
 /**
- * UC5 Subject Data Lifecycle — Flow scenario test.
+ * Use Cases Subject Data Lifecycle — Flow scenario test.
  *
  * This test chains the full subject data lifecycle in one coordinated scenario:
  *   Step 1: bootstrapSubjectOrganizationIndex
@@ -27,7 +27,7 @@ function jsonResponse(body, status = 200) {
   });
 }
 
-test('UC5 subject data lifecycle flow: bootstrap org → import IPS → grant access → request token → digital twin', async () => {
+test('Use cases subject data lifecycle flow: bootstrap org → import IPS → grant access → request token → digital twin', async () => {
   const ctx = { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' };
 
   // ── Shared scenario state ──────────────────────────────────────────────────

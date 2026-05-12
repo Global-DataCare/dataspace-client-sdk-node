@@ -433,7 +433,7 @@ test('bootstrapIndividualOrganizationSimple registers individual org and confirm
     assert.equal(registrationClaims['org.schema.Organization.alternateName'], 'ana');
     assert.equal(registrationClaims['org.schema.Service.category'], 'health-care');
     assert.equal(registrationClaims['org.schema.Person.telephone'], 'tel:+34600111222');
-    assert.equal(registrationClaims['org.schema.Person.hasOccupation'], 'org.hl7.v3.RoleCode|RESPRSN');
+    assert.equal(registrationClaims['org.schema.Person.hasOccupation'], '|RESPRSN');
   } finally {
     globalThis.fetch = originalFetch;
   }

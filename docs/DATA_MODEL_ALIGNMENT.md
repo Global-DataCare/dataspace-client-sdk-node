@@ -9,6 +9,12 @@ Reference alignment for SDK consumers and backend integrators.
 - DataConv flows use `/publisher/...` namespace.
 - SDK helpers should abstract these prefixes so integrators do not rebuild paths manually.
 
+## Claims Envelope
+
+- Canonical claim carrier is `resource.meta.claims`.
+- `meta.claims` remains accepted only as deprecated compatibility for older payloads.
+- New SDK examples and integrator docs should use `resource.meta.claims` when constructing messages.
+
 ## Business Sector vs Host Registry Sector
 
 - Host onboarding/routing can use infrastructure/network sector (`HOST_REGISTRY_SECTOR`).

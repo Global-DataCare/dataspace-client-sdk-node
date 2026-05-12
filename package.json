@@ -1,6 +1,6 @@
 {
   "name": "dataspace-client-sdk-node",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Node.js SDK for DIDComm plain batch + async polling flows",
   "license": "Apache-2.0",
   "author": "Antifraud Services Inc.",
@@ -20,7 +20,8 @@
     "type-check": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test tests/*.test.mjs",
     "example:e2e-bootstrap-tenant": "npm run build && node examples/e2e-bootstrap-tenant.mjs",
-    "test:e2e:live-gw-uc5": "npm run build && RUN_LIVE_GW_E2E=1 node --test tests/live-gw-uc5.e2e.test.mjs"
+    "test:e2e:live-use-cases": "npm run build && RUN_LIVE_GW_E2E=1 node --test tests/live-gw-uc5.e2e.test.mjs",
+    "test:e2e:live-gw-uc5": "npm run test:e2e:live-use-cases"
   },
   "engines": {
     "node": ">=22"
@@ -31,7 +32,7 @@
   },
   "dependencies": {
     "@noble/post-quantum": "^0.6.1",
-    "gdc-common-utils-ts": "^1.4.12",
+    "gdc-common-utils-ts": "^1.4.13",
     "node-fetch": "^3.3.2"
   }
 }

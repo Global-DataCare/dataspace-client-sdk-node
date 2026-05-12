@@ -519,6 +519,14 @@ export type ClientOptions = {
   wallet?: WalletProvider;
   /** Optional default tenant context so calls can omit ctx repeatedly. */
   ctx?: RouteContext;
+  /** Demo mode relaxes transport timeouts and enables synthetic fallbacks when the backend is offline. */
+  runtimeMode?: 'demo' | 'development' | 'strict';
+  /** Override the request timeout used for POST calls. */
+  requestTimeoutMs?: number;
+  /** Override the maximum number of request retries used for POST calls. */
+  requestRetries?: number;
+  /** Allow synthetic example-data fallbacks when the backend cannot be reached. */
+  allowDemoFallback?: boolean;
 };
 
 /**
@@ -609,6 +617,19 @@ export type SmartTokenRequestSimpleInput = {
   sector?: string;
   idToken: string;
   scopes: string[];
+  subjectDid?: string;
+  vpToken?: string;
+  clientId?: string;
+  audience?: string;
+  issuer?: string;
+  redirectUri?: string;
+  acrValues?: string;
+  codeChallenge?: string;
+  codeChallengeMethod?: 'S256';
+  presentationSubmission?: Record<string, unknown>;
+  purpose?: string;
+  requestBodyClaims?: Record<string, unknown>;
+  smartTokenKind?: 'token-exchange' | 'openid-smart';
   tokenCacheKey?: string;
   /** @deprecated Use `tokenCacheKey`. */
   endpointId?: string;

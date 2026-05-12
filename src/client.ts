@@ -92,6 +92,26 @@ function parseRetryAfterMs(header: string | null): number | undefined {
   return undefined;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.floor(ms))));
+}
+
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  });
+}
+
+function isRetryableTransportError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error || '');
+  return /fetch failed|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|abort/i.test(message);
+}
+
+function isDemoMode(mode?: string): boolean {
+  return String(mode || '').toLowerCase() === 'demo';
+}
+
 type CachedToken = {
   accessToken: string;
   tokenType: string;
@@ -104,10 +124,15 @@ export class DataspaceNodeClient {
   private readonly bearerToken?: string;
   private readonly defaultHeaders: Record<string, string>;
   private readonly wallet?: WalletProvider;
+  private readonly runtimeMode: 'demo' | 'development' | 'strict';
+  private readonly requestTimeoutMs: number;
+  private readonly requestRetries: number;
+  private readonly allowDemoFallback: boolean;
   private defaultCtx?: RouteContext;
   private defaultTimeoutMs?: number;
   private defaultIntervalMs?: number;
   private readonly _tokenCache = new Map<string, CachedToken>();
+  private readonly _demoJobs = new Map<string, { kind: string; payload: Record<string, unknown>; path: string }>();
 
   constructor(options: ClientOptions) {
     this.baseUrl = trimTrailingSlash(options.baseUrl);
@@ -115,6 +140,18 @@ export class DataspaceNodeClient {
     this.defaultHeaders = options.defaultHeaders ?? {};
     this.wallet = options.wallet;
     this.defaultCtx = options.ctx;
+    this.runtimeMode = options.runtimeMode ?? 'strict';
+    this.requestTimeoutMs = Math.max(
+      1,
+      Math.floor(
+        options.requestTimeoutMs ?? (isDemoMode(this.runtimeMode) ? 1000 : this.runtimeMode === 'development' ? 10_000 : 20_000),
+      ),
+    );
+    this.requestRetries = Math.max(
+      0,
+      Math.floor(options.requestRetries ?? (isDemoMode(this.runtimeMode) || this.runtimeMode === 'development' ? 2 : 0)),
+    );
+    this.allowDemoFallback = options.allowDemoFallback ?? isDemoMode(this.runtimeMode);
   }
 
   public getWallet(): WalletProvider | undefined {
@@ -453,6 +490,18 @@ export class DataspaceNodeClient {
   /** Poll path: identity token exchange. Pair with `identityTokenExchangePath`. */
   public identityTokenExchangePollPath(ctx?: RouteContext): string {
     return this.tenantIdentityPath(ctx, 'host', '_exchange-response');
+  }
+
+  /** Submit path: SMART OpenID token request (`identity/openid/smart/token`). */
+  public identityOpenIdSmartTokenPath(ctx?: RouteContext): string {
+    const routeCtx = this.requireRouteContext(ctx);
+    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/identity/openid/smart/token`;
+  }
+
+  /** Poll path: SMART OpenID token request. Pair with `identityOpenIdSmartTokenPath`. */
+  public identityOpenIdSmartTokenPollPath(ctx?: RouteContext): string {
+    const routeCtx = this.requireRouteContext(ctx);
+    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/identity/openid/smart/_batch-response`;
   }
 
   /** Submit path: identity license issue (`identity/auth/_issue`). */
@@ -825,6 +874,67 @@ export class DataspaceNodeClient {
     }
     const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
 
+    if (input.smartTokenKind === 'openid-smart') {
+      const smartPayload: Record<string, unknown> = {
+        thid: `smart-${randomUUID()}`,
+        iss: input.issuer || input.clientId || routeCtx.tenantId,
+        aud: input.audience || routeCtx.tenantId,
+        body: {
+          client_id: input.clientId || input.subjectDid || routeCtx.tenantId,
+          redirect_uri: input.redirectUri || `${this.baseUrl}/callback`,
+          code_challenge: input.codeChallenge || 'demo-code-challenge',
+          code_challenge_method: input.codeChallengeMethod || 'S256',
+          acr_values: input.acrValues || 'urn:antifraud:acr:openid4vp:employee',
+          vp_token: input.vpToken || input.idToken,
+          presentation_submission: input.presentationSubmission,
+          expires_in: 300,
+          token_type: 'Bearer',
+          sub: input.subjectDid || input.issuer || input.clientId || routeCtx.tenantId,
+          purpose: input.purpose || 'TREAT',
+          scope: normalizedScopes.join(' '),
+          ...(input.requestBodyClaims || {}),
+        },
+        ...(input.additionalClaims || {}),
+      };
+
+      const exchange = await this.submitAndPoll(
+        this.identityOpenIdSmartTokenPath(routeCtx),
+        this.identityOpenIdSmartTokenPollPath(routeCtx),
+        smartPayload,
+        pollOptions,
+      );
+
+      const exchangeBody = (exchange.poll.body as Record<string, unknown>) ?? {};
+      const accessToken = String(exchangeBody.access_token || '').trim();
+      if (exchange.poll.status >= 400 || !accessToken) {
+        return {
+          status: 'failed',
+          statusCode: exchange.poll.status,
+          response: exchange.poll.body,
+        };
+      }
+
+      const tokenType = String(exchangeBody.token_type || 'Bearer');
+      const grantedScopes = String(exchangeBody.scope || '').trim().split(' ').filter(Boolean);
+      const resolvedScopes = grantedScopes.length ? grantedScopes : normalizedScopes;
+      const expiresIn = Number(exchangeBody.expires_in ?? 0);
+      this._tokenCache.set(tokenCacheKey, {
+        accessToken,
+        tokenType,
+        scopes: resolvedScopes,
+        expiresAt: Date.now() + expiresIn * 1000,
+      });
+
+      return {
+        status: 'fetched',
+        accessToken,
+        tokenType,
+        scopes: resolvedScopes,
+        statusCode: exchange.poll.status,
+        response: exchange.poll.body,
+      };
+    }
+
     const payload: Record<string, unknown> = {
       thid: `exchange-${randomUUID()}`,
       grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
@@ -1068,7 +1178,7 @@ export class DataspaceNodeClient {
       payload: payload as Record<string, unknown>,
       defaultHeaders: this.defaultHeaders,
       bearerToken: this.bearerToken,
-      fetcher: (requestUrl: string, init: DidcommFetchInit) => fetch(requestUrl, init),
+      fetcher: (requestUrl: string, init: DidcommFetchInit) => this.fetchWithPolicy(requestUrl, init, payload),
     });
     return { status: result.status, location: result.location, body: result.body };
   }
@@ -1120,7 +1230,7 @@ export class DataspaceNodeClient {
           recipientJwk: recipientJwk as PublicJwk,
           contentType: 'JWS',
         }),
-      fetcher: (requestUrl: string, init: DidcommFetchInit) => fetch(requestUrl, init),
+      fetcher: (requestUrl: string, init: DidcommFetchInit) => this.fetchWithPolicy(requestUrl, init, payload),
     });
     return { status: result.status, location: result.location, body: result.body };
   }
@@ -1502,7 +1612,7 @@ export class DataspaceNodeClient {
       body: {
         data: [{
           type: 'Family-search-v1.0',
-          meta: { claims }, // legacy compatibility
+          meta: { claims }, // deprecated compatibility
           resource: { meta: { claims } },
         }],
       },
@@ -1519,20 +1629,21 @@ export class DataspaceNodeClient {
     const entry = (result.poll.body as any)?.body?.data?.[0];
     if (!entry) return null;
 
-    const status = entry.meta?.claims?.['org.schema.FamilyRegistration.status'] as FamilyRegistrationStatus | undefined;
+    const entryClaims = entry.resource?.meta?.claims || entry.meta?.claims || {};
+    const status = entryClaims['org.schema.FamilyRegistration.status'] as FamilyRegistrationStatus | undefined;
     if (!status || status === 'not_found') return null;
 
     const subjectInfo: any = {
-      identifierType: entry.meta?.claims?.['org.schema.Organization.identifier.additionalType'] as string | undefined,
-      identifierValue: entry.meta?.claims?.['org.schema.Organization.identifier.value'] as string | undefined,
-      nickname: entry.meta?.claims?.['org.schema.Organization.alternateName'] as string | undefined,
-      birthDate: entry.meta?.claims?.['org.schema.Organization.foundingDate'] as string | undefined,
-      telephone: entry.meta?.claims?.['org.schema.Organization.owner.telephone'] as string | undefined,
+      identifierType: entryClaims['org.schema.Organization.identifier.additionalType'] as string | undefined,
+      identifierValue: entryClaims['org.schema.Organization.identifier.value'] as string | undefined,
+      nickname: entryClaims['org.schema.Organization.alternateName'] as string | undefined,
+      birthDate: entryClaims['org.schema.Organization.foundingDate'] as string | undefined,
+      telephone: entryClaims['org.schema.Organization.owner.telephone'] as string | undefined,
     };
 
     return {
       status,
-      offerId: entry.meta?.claims?.['org.schema.Offer.identifier'] as string | undefined,
+      offerId: entryClaims['org.schema.Offer.identifier'] as string | undefined,
       organizationId: entry.resource?.id as string | undefined,
       subjectInfo,
     };
@@ -1577,7 +1688,7 @@ export class DataspaceNodeClient {
         data: [
           {
             type: 'Organization-activation-request-v1.0',
-            meta: { claims }, // legacy compatibility
+            meta: { claims }, // deprecated compatibility
             resource: { meta: { claims } },
           },
         ],
@@ -1675,7 +1786,7 @@ export class DataspaceNodeClient {
       body: {
         data: [{
           type: input.dataType || 'Organization-order-request-v1.0',
-          meta: { claims }, // legacy compatibility
+          meta: { claims }, // deprecated compatibility
           resource: { meta: { claims } },
         }],
       },
@@ -1732,8 +1843,8 @@ export class DataspaceNodeClient {
   public getOfferIdFromResponse(result: SubmitAndPollResult | PollResult | unknown): string | undefined {
     const entry = this.getFirstDidcommDataEntryFromResponse(result);
     const offerId = String(
-      (entry as any)?.meta?.claims?.[ClaimsOfferSchemaorg.identifier]
-      || (entry as any)?.resource?.meta?.claims?.[ClaimsOfferSchemaorg.identifier]
+      (entry as any)?.resource?.meta?.claims?.[ClaimsOfferSchemaorg.identifier]
+      || (entry as any)?.meta?.claims?.[ClaimsOfferSchemaorg.identifier]
       || '',
     ).trim();
     return offerId || undefined;
@@ -1744,7 +1855,7 @@ export class DataspaceNodeClient {
    */
   public getOfferPreviewFromResponse(result: SubmitAndPollResult | PollResult | unknown): OfferPreview {
     const entry = this.getFirstDidcommDataEntryFromResponse(result) as any;
-    const claims = entry?.meta?.claims || entry?.resource?.meta?.claims || {};
+    const claims = entry?.resource?.meta?.claims || entry?.meta?.claims || {};
     const seatsRaw = claims[ClaimsOfferSchemaorg.eligibleQuantityValue];
     const seats =
       typeof seatsRaw === 'number'
@@ -1780,7 +1891,7 @@ export class DataspaceNodeClient {
     if (byBody) return byBody;
 
     const entry = this.getFirstDidcommDataEntryFromResponse(result) as any;
-    const claims = entry?.meta?.claims || entry?.resource?.meta?.claims || {};
+    const claims = entry?.resource?.meta?.claims || entry?.meta?.claims || {};
     const byClaims = String(
       claims['org.schema.IndividualProduct.serialNumber']
       || claims['org.schema.Offer.serialNumber']
@@ -1918,7 +2029,8 @@ export class DataspaceNodeClient {
         data: [
           {
             type: input.dataType || 'Employee-create-request-v1.0',
-            meta: { claims: input.employeeClaims || {} }, // legacy compatibility
+            request: { method: 'POST' },
+            meta: { claims: input.employeeClaims || {} }, // deprecated compatibility
             resource: { meta: { claims: input.employeeClaims || {} } },
           },
         ],
@@ -2156,8 +2268,8 @@ export class DataspaceNodeClient {
         data: [
           {
             type: input.dataType || 'Consent-grant-request-v1.0',
-            meta: { claims: built.consentClaims }, // legacy compatibility
-            resource: { meta: { claims: built.consentClaims } },
+            meta: { claims: built.consentClaims }, // deprecated compatibility
+            resource: { resourceType: 'Consent', meta: { claims: built.consentClaims } },
           },
         ],
       },
@@ -2240,6 +2352,240 @@ export class DataspaceNodeClient {
 
   // ---- Internal HTTP helpers ---------------------------------------------
 
+  private async fetchWithPolicy(url: string, init: RequestInit, payload?: unknown): Promise<Response> {
+    const attempts = Math.max(1, this.requestRetries + 1);
+    let lastError: unknown;
+
+    for (let attempt = 1; attempt <= attempts; attempt += 1) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
+      try {
+        const response = await fetch(url, { ...init, signal: controller.signal });
+        clearTimeout(timeout);
+        if (response.status >= 500 && attempt < attempts) {
+          await sleep(50);
+          continue;
+        }
+        return response;
+      } catch (error) {
+        clearTimeout(timeout);
+        lastError = error;
+        if (attempt < attempts && isRetryableTransportError(error)) {
+          await sleep(50);
+          continue;
+        }
+        break;
+      }
+    }
+
+    if (this.allowDemoFallback && isRetryableTransportError(lastError)) {
+      const fallback = this.buildDemoFallbackResponse(url, init, payload);
+      console.warn(`[dataspace-client-sdk-node] demo fallback for ${url}: backend unavailable, returning synthetic example data.`);
+      return fallback;
+    }
+
+    throw lastError instanceof Error ? lastError : new Error(`Request failed for ${url}`);
+  }
+
+  private buildDemoFallbackResponse(url: string, init: RequestInit, payload?: unknown): Response {
+    const pathname = new URL(url).pathname;
+    const body = this.buildDemoFallbackBody(pathname, payload);
+    return jsonResponse(body, this.buildDemoFallbackStatus(pathname, init));
+  }
+
+  private buildDemoFallbackStatus(pathname: string, init: RequestInit): number {
+    if (pathname.endsWith('/_batch') || pathname.endsWith('/_activate') || pathname.endsWith('/_exchange') || pathname.endsWith('/_dcr') || pathname.endsWith('/_code') || pathname.endsWith('/_token') || pathname.endsWith('/token')) {
+      return 202;
+    }
+    if (pathname.endsWith('/_batch-response') || pathname.endsWith('/_activate-response') || pathname.endsWith('/_exchange-response') || pathname.endsWith('/_dcr-response') || pathname.endsWith('/_code-response') || pathname.endsWith('/_token-response') || pathname.endsWith('/token-response')) {
+      return 200;
+    }
+    return String(init.method || 'POST').toUpperCase() === 'POST' ? 200 : 200;
+  }
+
+  private buildDemoFallbackBody(pathname: string, payload?: unknown): unknown {
+    if (pathname.endsWith('/_batch-response') || pathname.endsWith('/_activate-response') || pathname.endsWith('/_exchange-response') || pathname.endsWith('/_dcr-response') || pathname.endsWith('/_code-response') || pathname.endsWith('/_token-response')) {
+      return this.buildDemoPollBody(pathname, payload);
+    }
+
+    const request = (payload ?? {}) as Record<string, unknown>;
+    const thid = String(request.thid || request['thid'] || '').trim();
+
+    if (pathname.endsWith('/_batch')) {
+      if (pathname.includes('/registry/org.schema/Organization/_batch')) {
+        this._demoJobs.set(thid || pathname, { kind: 'organization-batch', payload: request, path: pathname });
+      } else if (pathname.includes('/registry/org.schema/Order/_batch')) {
+        this._demoJobs.set(thid || pathname, { kind: 'order-batch', payload: request, path: pathname });
+      } else if (pathname.includes('/individual/org.schema/Consent/_batch') || pathname.includes('/individual/org.hl7.fhir.r4/Consent/_batch')) {
+        this._demoJobs.set(thid || pathname, { kind: 'consent-batch', payload: request, path: pathname });
+      } else if (pathname.includes('/organization/org.hl7.fhir.r4/Composition/_batch') || pathname.includes('/digitaltwin/org.hl7.fhir.r4/Composition/_batch')) {
+        this._demoJobs.set(thid || pathname, { kind: 'composition-batch', payload: request, path: pathname });
+      } else if (pathname.includes('/individual/org.schema/Organization/_batch')) {
+        this._demoJobs.set(thid || pathname, { kind: 'individual-organization-batch', payload: request, path: pathname });
+      }
+      return { accepted: true, demo: true, thid, path: pathname };
+    }
+
+    if (pathname.endsWith('/token')) {
+      this._demoJobs.set(thid || pathname, { kind: 'identity-openid-smart-token', payload: request, path: pathname });
+      return { accepted: true, demo: true, thid, path: pathname };
+    }
+
+    if (pathname.endsWith('/_activate')) {
+      this._demoJobs.set(thid || pathname, { kind: 'organization-activate', payload: request, path: pathname });
+      return { accepted: true, demo: true, thid, path: pathname };
+    }
+
+    if (pathname.endsWith('/_dcr')) {
+      this._demoJobs.set(thid || pathname, { kind: 'identity-dcr', payload: request, path: pathname });
+      return { accepted: true, demo: true, thid, path: pathname };
+    }
+
+    if (pathname.endsWith('/_code')) {
+      this._demoJobs.set(thid || pathname, { kind: 'identity-code', payload: request, path: pathname });
+      return { accepted: true, demo: true, thid, path: pathname };
+    }
+
+    if (pathname.endsWith('/_token')) {
+      this._demoJobs.set(thid || pathname, { kind: 'identity-smart-token', payload: request, path: pathname });
+      return { accepted: true, demo: true, thid, path: pathname };
+    }
+
+    if (pathname.endsWith('/_exchange')) {
+      this._demoJobs.set(thid || pathname, { kind: 'identity-exchange', payload: request, path: pathname });
+      return { accepted: true, demo: true, thid, path: pathname };
+    }
+
+    return { accepted: true, demo: true, thid, path: pathname };
+  }
+
+  private buildDemoPollBody(pathname: string, payload?: unknown): unknown {
+    const request = (payload ?? {}) as Record<string, unknown>;
+    const thid = String(request.thid || '').trim();
+    const job = this._demoJobs.get(thid) ?? Array.from(this._demoJobs.values()).reverse().find((entry) => entry.path.endsWith(pathname.replace(/.*\//, '')) || entry.path === pathname);
+
+    if (pathname.endsWith('/token-response') || pathname.endsWith('/_token-response')) {
+      if (pathname.endsWith('/token-response')) {
+        return {
+          status: 'COMPLETED',
+          access_token: 'demo-access-token-001',
+          token_type: 'Bearer',
+          scope: String((job?.payload as Record<string, unknown> | undefined)?.scope || 'organization/Composition.rs?subject=did:web:demo:individual:001&section=LOINC|48765-2').trim(),
+          expires_in: 3600,
+          demo: true,
+          thid,
+        };
+      }
+      return { status: 'COMPLETED', id_token: 'demo-id-token-001', demo: true, thid };
+    }
+
+    if (pathname.endsWith('/_code-response')) {
+      return { status: 'COMPLETED', code: 'demo-pkce-code-001', demo: true, thid };
+    }
+
+    if (pathname.endsWith('/_dcr-response')) {
+      return { status: 'COMPLETED', client_id: 'did:web:demo-device.example.com', demo: true, thid };
+    }
+
+    if (pathname.endsWith('/_exchange-response')) {
+      return {
+        status: 'COMPLETED',
+        access_token: 'demo-access-token-001',
+        token_type: 'Bearer',
+        scope: 'organization/Composition.rs',
+        expires_in: 3600,
+        demo: true,
+        thid,
+      };
+    }
+
+    if (pathname.endsWith('/_activate-response')) {
+      const data = [{ response: { status: 201 }, resource: { resourceType: 'Organization', id: 'demo-org-001' } }];
+      return {
+        status: 'COMPLETED',
+        body: {
+          body: { data },
+          data,
+          demo: true,
+          thid,
+        },
+      };
+    }
+
+    if (pathname.endsWith('/_batch-response')) {
+      const fallbackKind = pathname.includes('/Order/_batch-response')
+        ? 'order-batch'
+        : pathname.includes('/Consent/_batch-response')
+          ? 'consent-batch'
+          : pathname.includes('/Composition/_batch-response')
+            ? 'composition-batch'
+            : pathname.includes('/Organization/_batch-response')
+              ? 'organization-batch'
+              : undefined;
+      const effectiveKind = job?.kind || fallbackKind;
+
+      if (effectiveKind === 'organization-batch' || effectiveKind === 'individual-organization-batch') {
+        const data: any[] = [{ response: { status: 201 }, resource: { resourceType: 'Organization', id: 'demo-org-001' } }];
+        const claims = {
+          'org.schema.Offer.identifier': 'demo-offer-001',
+          'org.schema.FamilyRegistration.status': 'already_exists',
+        };
+        data[0].resource.meta = { claims };
+        data[0].meta = { claims };
+        return {
+          status: 'COMPLETED',
+          body: {
+            body: { data },
+            data,
+            demo: true,
+            thid,
+          },
+        };
+      }
+
+      if (effectiveKind === 'order-batch') {
+        const data = [{ response: { status: 201 }, resource: { resourceType: 'Order', id: 'demo-order-001' } }];
+        return {
+          status: 'COMPLETED',
+          body: {
+            body: { data },
+            data,
+            demo: true,
+            thid,
+          },
+        };
+      }
+
+      if (effectiveKind === 'consent-batch') {
+        const data = [{ response: { status: 201 }, resource: { resourceType: 'Consent', id: 'demo-consent-001' } }];
+        return {
+          status: 'COMPLETED',
+          body: {
+            body: { data },
+            data,
+            demo: true,
+            thid,
+          },
+        };
+      }
+
+      if (effectiveKind === 'composition-batch') {
+        const data = [{ response: { status: 201 }, resource: { resourceType: 'Composition', id: 'demo-composition-001' } }];
+        return {
+          status: 'COMPLETED',
+          body: {
+            body: { data },
+            data,
+            demo: true,
+            thid,
+          },
+        };
+      }
+    }
+
+    return { status: 'COMPLETED', body: { demo: true, thid } };
+  }
+
   private async doPost(path: string, payload: unknown, contentType: string): Promise<Response> {
     const url = /^https?:\/\//.test(path)
       ? path
@@ -2255,11 +2601,11 @@ export class DataspaceNodeClient {
       headers.Authorization = `Bearer ${this.bearerToken}`;
     }
 
-    return fetch(url, {
+    return this.fetchWithPolicy(url, {
       method: 'POST',
       headers,
       body: JSON.stringify(payload),
-    });
+    }, payload);
   }
 
   private async parseResponseBody(response: Response): Promise<unknown> {

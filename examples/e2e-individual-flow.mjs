@@ -22,8 +22,9 @@ const payload = createDidcommPlainMessage({
     data: [
       {
         type: 'Family-registration-form-v1.0',
-        meta: {
-          claims: {
+        resource: {
+          meta: {
+            claims: {
             '@context': 'org.schema',
             '@type': 'template',
             [ClaimsOrganizationSchemaorg.addressCountry]: 'ES',
@@ -34,6 +35,7 @@ const payload = createDidcommPlainMessage({
             [ClaimsServiceSchemaorg.identifier]: 'did:web:api-provider.example.com',
             [ClaimsServiceSchemaorg.serviceType]: 'http://terminology.hl7.org/CodeSystem/v3-ActReason|SRVC',
             [ClaimsServiceSchemaorg.termsOfService]: 'https://provider.example.com/terms',
+            },
           },
         },
       },
