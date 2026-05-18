@@ -5,6 +5,8 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased] - 2026-05-04
 
 ### Added
+- Synced GW canonical `core-flow-examples` fixture to VP-JSON-first activation sample (`ORGANIZATION_ACTIVATION_REQUEST.body.data[].vp`) for auditable onboarding proof modeling.
+- VP helper surface is now centralized in `gdc-common-utils-ts` and consumed from SDK re-export (`src/vp-token.ts`).
 - Data model alignment guide updated for cross-service namespace consistency:
   - Gateway: `/host/...` (with `auth` security model)
   - ICA: `/ica/...`
