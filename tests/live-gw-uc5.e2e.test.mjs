@@ -536,10 +536,6 @@ test('LIVE IPS ingestion through Communication updates individual index baseline
       },
     );
   }
-  if (ingest.poll.status === 404) {
-    console.warn('[live-ips-ingestion] Communication ingestion route not available in current GW local-demo; skipping assertions.');
-    return;
-  }
   assert.equal(ingest.poll.status, 200, 'Communication ingestion must complete.');
   assertCommunicationAckShape(ingest.poll.body, 'Communication ingestion');
 

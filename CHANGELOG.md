@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.10 - 2026-05-18
+
+### Changed
+- Updated dependency to `gdc-common-utils-ts@^1.4.20`.
+- Aligned the live ICA VP fixture with the canonical representative contract:
+  - `credentialSubject.hasOccupation.identifier.value = "RESPRSN"`
+  - `credentialSubject.hasCredential.material` present
+- Kept live UC5 E2E strict for core routes: endpoint absence must fail instead of soft-skipping.
+
+### Documentation
+- Added explicit npm publishing guide for this package, including `NPM_TOKEN` bootstrap from `~/.zshrc`.
+
 ## 0.2.9 - 2026-05-18
 
 ### Changed
