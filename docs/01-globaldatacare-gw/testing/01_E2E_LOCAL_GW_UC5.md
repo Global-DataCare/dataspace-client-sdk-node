@@ -7,14 +7,18 @@ This test runs the real use-cases chain against a locally running GW in demo mod
 3. Consent is created (`Consent/_batch`) with `organization/Composition.rs?subject=...&section=*` or a narrower explicit section list.
 4. Professional requests SMART token and receives scoped token.
 
+Scope note:
+- This file covers **GW core** E2E only.
+- Extension flows are validated separately in their corresponding extension repositories.
+
 Test file:
-- [live-gw-uc5.e2e.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/live-gw-uc5.e2e.test.mjs)
+- [live-gw-uc5.e2e.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/live-gw-uc5.e2e.test.mjs)
 
 ## Prerequisites
 
 1. Start GW local in demo mode:
 ```bash
-npm -C /Users/fernando/GITS/gdc-workspace/gwtemplate-node-ts run api:local-demo
+npm -C $HOME/GITS/gdc-workspace/gwtemplate-node-ts run api:local-demo
 ```
 
 2. Provide ICA proof as either:
@@ -22,7 +26,7 @@ npm -C /Users/fernando/GITS/gdc-workspace/gwtemplate-node-ts run api:local-demo
 - `VP_TOKEN_FILE` pointing to a minimal fixture payload.
 
 Default fixture included:
-- [ica-vp-minimal.json](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/fixtures/ica-vp-minimal.json)
+- [ica-vp-minimal.json]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/fixtures/ica-vp-minimal.json)
 - Built at runtime into unsigned compact JWT only for local demo reproducibility.
 
 3. Use a tenant id aligned with your activation proof (`TENANT_ID`).
@@ -32,7 +36,7 @@ If `PROFESSIONAL_ID_TOKEN` is not provided, the test synthesizes an unsigned dem
 ## Run
 
 ```bash
-cd /Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node
+cd $HOME/GITS/gdc-workspace/dataspace-client-sdk-node
 BASE_URL=http://127.0.0.1:3000 \
 VP_TOKEN_FILE=./tests/fixtures/ica-vp-minimal.json \
 TENANT_ID=VATES-B00000000 \
@@ -49,3 +53,4 @@ npm run test:e2e:live-use-cases
 - `_activate` in this E2E uses `vp_token` in payload; the HTTP bearer is transport-only and, by default, the test reuses the same `id_token` for that header if `AUTH_BEARER` is not set.
 - If `TENANT_ID` does not match activation proof context, downstream tenant-scoped steps can return `404`.
 - The scripted scope assertion verifies the pinned `organization/Composition.rs?subject=...` scope is granted in the SMART token response.
+- For secure/insecure bearer matrices and `compat`/`strict` command sets, see [01_SECURITY_TESTS.md](../security/01_SECURITY_TESTS.md).

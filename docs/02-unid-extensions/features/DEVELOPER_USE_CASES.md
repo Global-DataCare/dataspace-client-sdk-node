@@ -3,7 +3,7 @@
 This guide provides exact method calls for real integration flows.
 
 Normative scope/resource placement matrix:
-- [DATA_PLANES_SCOPE_MATRIX.md](DATA_PLANES_SCOPE_MATRIX.md)
+- [../../03-integrator-internal/platform/DATA_PLANES_SCOPE_MATRIX.md](../../03-integrator-internal/platform/DATA_PLANES_SCOPE_MATRIX.md)
 
 SDK: `dataspace-client-sdk-node` (`DataspaceNodeClient`)
 
@@ -30,7 +30,7 @@ const ctx = {
 Terminology note: `subject` names in methods/claims refer to the member (person/patient) orchestrated by the tenant's personal indexing service provider flow.
 
 Method: `bootstrapSubjectOrganizationIndex(ctx, input)`
-Test: [tests/client.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-subject-data.flow.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-subject-data.flow.test.mjs)
+Test: [tests/client.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-subject-data.flow.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-subject-data.flow.test.mjs)
 
 ```ts
 const result = await client.bootstrapSubjectOrganizationIndex(ctx, {
@@ -50,15 +50,13 @@ const result = await client.bootstrapSubjectOrganizationIndex(ctx, {
 ## UC5.2 Legal organization activation in GW (from ICA proof)
 
 Method: `activateOrganizationInGatewayFromIcaProof(hostCtx, input)`
-Test: [tests/client.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-org-onboarding.flow.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-org-onboarding.flow.test.mjs)
+Test: [tests/client.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-org-onboarding.flow.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-org-onboarding.flow.test.mjs)
 
 ```ts
 const activation = await client.activateOrganizationInGatewayFromIcaProof(
   { jurisdiction: 'ES', sector: 'health-care' },
   {
     vpToken: process.env.ICA_VP_TOKEN!,
-    organizationVc: process.env.ICA_ORG_VC_JWT,
-    legalRepresentativeVc: process.env.ICA_LEGAL_REP_VC_JWT,
     regulatoryEvidence: { sanitaryRegister: 'REG-123' },
   },
 );
@@ -67,7 +65,7 @@ const activation = await client.activateOrganizationInGatewayFromIcaProof(
 ## UC5.3 Create employee / professional license
 
 Method: `createOrganizationEmployee(ctx, input)`
-Test: [tests/client.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-org-onboarding.flow.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-org-onboarding.flow.test.mjs)
+Test: [tests/client.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-org-onboarding.flow.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-org-onboarding.flow.test.mjs)
 
 ```ts
 await client.createOrganizationEmployee(ctx, {
@@ -82,7 +80,7 @@ await client.createOrganizationEmployee(ctx, {
 ## UC5.4 Activate employee device
 
 Method: `activateEmployeeDeviceWithActivationCode(ctx, input)`
-Test: [tests/client.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-org-onboarding.flow.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-org-onboarding.flow.test.mjs)
+Test: [tests/client.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-org-onboarding.flow.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-org-onboarding.flow.test.mjs)
 
 ```ts
 const device = await client.activateEmployeeDeviceWithActivationCode(ctx, {
@@ -99,7 +97,7 @@ const device = await client.activateEmployeeDeviceWithActivationCode(ctx, {
 ## UC5.5 Import IPS/FHIR and update index
 
 Method: `importIpsOrFhirAndUpdateIndex(ctx, input)`
-Test: [tests/client.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-subject-data.flow.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-subject-data.flow.test.mjs)
+Test: [tests/client.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-subject-data.flow.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-subject-data.flow.test.mjs)
 
 ```ts
 await client.importIpsOrFhirAndUpdateIndex(ctx, {
@@ -116,7 +114,7 @@ await client.importIpsOrFhirAndUpdateIndex(ctx, {
 
 Step 1 method: `grantProfessionalAccessSimple(ctx, input)`  
 Step 2 method: `requestSmartToken(input)`
-Test: [tests/client.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-subject-data.flow.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-subject-data.flow.test.mjs)
+Test: [tests/client.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-subject-data.flow.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-subject-data.flow.test.mjs)
 
 Domain note: the protected context is modeled as organization (including personal organizations with controller + subject/person/patient members).
 
@@ -145,7 +143,7 @@ const token = await client.requestSmartToken({
 ## UC5.7 Generate digital twin
 
 Method: `generateDigitalTwinFromSubjectData(ctx, input)`
-Test: [tests/client.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-subject-data.flow.test.mjs](/Users/fernando/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-subject-data.flow.test.mjs)
+Test: [tests/client.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/client.test.mjs), [tests/uc5-subject-data.flow.test.mjs]($HOME/GITS/gdc-workspace/dataspace-client-sdk-node/tests/uc5-subject-data.flow.test.mjs)
 
 ```ts
 await client.generateDigitalTwinFromSubjectData(ctx, {

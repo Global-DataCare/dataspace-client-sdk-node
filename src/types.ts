@@ -222,11 +222,11 @@ export type EndpointSelector = {
  * VC and regulatory evidence are optional enrichments used by policy/business checks.
  */
 export type GatewayOrganizationActivationInput = {
-  vpToken: string;
+  vpToken?: string;
+  /** Optional JSON VP alternative to `vpToken` (JWT). */
+  vp?: Record<string, unknown>;
   /** Generic requested seats/members for initial offer sizing. Defaults to 2. */
   numberOfMembers?: number;
-  organizationVc?: string;
-  legalRepresentativeVc?: string;
   regulatoryEvidence?: Record<string, unknown>;
   /** @deprecated Prefer `numberOfMembers` and explicit input fields. */
   additionalClaims?: Record<string, unknown>;
@@ -235,7 +235,8 @@ export type GatewayOrganizationActivationInput = {
 export type GatewayOrganizationActivationSimpleInput = {
   jurisdiction?: string;
   sector?: string;
-  vpToken: string;
+  vpToken?: string;
+  vp?: Record<string, unknown>;
   serviceProviderDidWeb?: string;
   serviceProviderUrl?: string;
   controllerEmail?: string;
@@ -244,8 +245,6 @@ export type GatewayOrganizationActivationSimpleInput = {
   numberOfMembers?: number;
   timeoutSeconds?: number;
   intervalSeconds?: number;
-  organizationVc?: string;
-  legalRepresentativeVc?: string;
   regulatoryEvidence?: Record<string, unknown>;
   additionalClaims?: Record<string, unknown>;
 };
@@ -358,6 +357,35 @@ export type IndividualOrganizationConfirmOrderSimpleInput = {
 export type IpsOrFhirImportInput = {
   compositionPayload: { thid?: string } & Record<string, unknown>;
   format?: 'api' | 'r4';
+  pollOptions?: PollOptions;
+};
+
+/**
+ * Input for Communication-based ingestion that triggers index update in GW.
+ */
+export type CommunicationIngestionInput = {
+  communicationPayload: { thid?: string } & Record<string, unknown>;
+  /**
+   * Path format segment used in v1 routes:
+   * - canonical: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4'
+   * - aliases: 'api' | 'r4' | 'fhir.r4'
+  */
+  pathFormatSegment?: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' | 'api' | 'r4' | 'fhir.r4';
+  /**
+   * When targeting `org.hl7.fhir.r4`, auto-build `entry.resource` from `entry.meta.claims`
+   * if `entry.resource` is missing.
+   * Canonical `resource.meta.claims` is always preserved.
+   * Default: true.
+   */
+  autoConvertClaimsToFhirR4?: boolean;
+  pollOptions?: PollOptions;
+};
+
+/**
+ * Input for RelatedPerson contact upsert in individual section.
+ */
+export type RelatedPersonUpsertInput = {
+  relatedPersonPayload: { thid?: string } & Record<string, unknown>;
   pollOptions?: PollOptions;
 };
 

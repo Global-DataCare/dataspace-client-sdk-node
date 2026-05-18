@@ -120,8 +120,6 @@ const activation = await client.activateOrganizationInGatewayFromIcaProof(
   { jurisdiction: profileContext.jurisdiction, sector: profileContext.hostRegistrySector },
   {
     vpToken,
-    organizationVc: onboardingProof.organizationVcJwt,
-    legalRepresentativeVc: onboardingProof.legalRepresentativeVcJwt,
     numberOfMembers: 2,
   },
 );
@@ -277,7 +275,7 @@ Complete path examples:
   `/{tenantId}/cds-ES/v1/health-care/entity/org.schema/Employee/_batch`
 
 Continue with:
-- `PRACTITIONER_FLOW_STEP_BY_STEP.md`
+- `03_PRACTITIONER_FLOW_STEP_BY_STEP.md`
 
 Shared wallet derivation profile:
 - `BACKEND_NODE_INTEGRATION.md` ("Deterministic Wallet Profile")

@@ -294,7 +294,7 @@ const result = await client.submitAndPoll(
 | `individualRelatedPersonPollPath(ctx)` | poll | `.../_batch-response` |
 | `individualObservationBatchPath(ctx)` | submit | `.../org.hl7.fhir.api/Observation/_batch` |
 | `individualObservationPollPath(ctx)` | poll | `.../_batch-response` |
-| `individualCommunicationBatchPath(ctx)` | submit | `.../org.hl7.fhir.r4/Communication/_batch` |
+| `individualCommunicationBatchPath(ctx, pathFormatSegment?)` | submit | `.../org.hl7.fhir.{api|r4}/Communication/_batch` |
 | `individualCommunicationPollPath(ctx)` | poll | `.../_batch-response` |
 | `individualTaskBatchPath(ctx)` | submit | `.../org.hl7.fhir.api/Task/_batch` |
 | `individualTaskPollPath(ctx)` | poll | `.../_batch-response` |
@@ -702,8 +702,8 @@ console.log(result.poll.status); // 200 if all tasks created
 
 ### `searchFamilyOrganization`
 
-Legacy helper: search an existing family organization by controller phone + usualname.
-For portal onboarding, use email-based registration flow docs (`PERSONAL_FLOW_STEP_BY_STEP.md`).
+Compatibility helper: search an existing family organization by controller phone + usualname.
+This flow stays valid when the controller identity is confirmed by phone and the onboarding form is accepted as input.
 
 ```ts
 searchFamilyOrganization(

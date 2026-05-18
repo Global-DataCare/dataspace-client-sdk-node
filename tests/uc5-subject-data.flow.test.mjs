@@ -4,8 +4,8 @@
  * This test chains the full subject data lifecycle in one coordinated scenario:
  *   Step 1: bootstrapSubjectOrganizationIndex
  *             → creates the subject's family/subject org in the index
- *   Step 2: importIpsOrFhirAndUpdateIndex
- *             → uploads the subject's IPS/FHIR composition (uses org context from step 1)
+ *   Step 2: ingestCommunicationAndUpdateIndex
+ *             → ingests subject payload via Communication and triggers index update (uses org context from step 1)
  *   Step 3: grantProfessionalAccess (Consent)
  *             → subject grants access to a healthcare professional
  *   Step 4: requestSmartToken (professional request)
@@ -27,7 +27,7 @@ function jsonResponse(body, status = 200) {
   });
 }
 
-test('Use cases subject data lifecycle flow: bootstrap org → import IPS → grant access → request token → digital twin', async () => {
+test('Use cases subject data lifecycle flow: bootstrap org → ingest communication → grant access → request token → digital twin', async () => {
   const ctx = { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' };
 
   // ── Shared scenario state ──────────────────────────────────────────────────
@@ -46,7 +46,7 @@ test('Use cases subject data lifecycle flow: bootstrap org → import IPS → gr
     if (calls.length === 3) return jsonResponse({ accepted: true }, 202);             // confirm submit
     if (calls.length === 4) return jsonResponse({ status: 'COMPLETED', body: { orderId: 'order-001' } }, 200);        // confirm poll
 
-    // ── Step 2: importIpsOrFhirAndUpdateIndex (2 calls) ─────────────────────
+    // ── Step 2: ingestCommunicationAndUpdateIndex (2 calls) ─────────────────
     if (calls.length === 5) return jsonResponse({ accepted: true }, 202);             // import submit
     if (calls.length === 6) return jsonResponse({ status: 'COMPLETED', body: { compositionId: 'comp-001' } }, 200);  // import poll
 
@@ -97,25 +97,25 @@ test('Use cases subject data lifecycle flow: bootstrap org → import IPS → gr
 
     // ── Step 2 ────────────────────────────────────────────────────────────────
     // Uses subjectOrgId from step 1 in composition payload
-    const importResult = await client.importIpsOrFhirAndUpdateIndex(ctx, {
-      compositionPayload: {
+    const importResult = await client.ingestCommunicationAndUpdateIndex(ctx, {
+      communicationPayload: {
         body: {
           data: [{
-            type: 'Composition-import-request-v1.0',
+            type: 'Communication-ingestion-request-v1.0',
             subjectOrgId,
             format: 'IPS-R4',
           }],
         },
       },
-      format: 'r4',
+      pathFormatSegment: 'org.hl7.fhir.api',
       pollOptions,
     });
 
     assert.equal(importResult.poll.status, 200, 'IPS import must complete');
     assert.equal(
       calls[4].url,
-      'http://localhost:3000/acme/cds-ES/v1/health-care/individual/org.hl7.fhir.r4/Composition/_batch',
-      'import must target individual FHIR R4 Composition batch',
+      'http://localhost:3000/acme/cds-ES/v1/health-care/individual/org.hl7.fhir.api/Communication/_batch',
+      'ingestion must target individual FHIR API Communication batch',
     );
 
     const compositionId = importResult.poll.body?.compositionId ?? 'comp-001';

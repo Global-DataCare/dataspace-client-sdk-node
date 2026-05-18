@@ -1,5 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto';
+import { appendFileSync, mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { createDidcommPlainMessage } from './builders.js';
+import { buildLoincToken } from './canonical.js';
+import { transformCommunicationClaimsToResourceFhirR4 } from './communication-transform.js';
 import { buildConsentClaimsSimpleWithCid } from 'gdc-common-utils-ts/utils/consent';
 import { generateServiceId } from 'gdc-common-utils-ts/utils/did';
 import { submitDidcomm, type DidcommFetchInit } from 'gdc-common-utils-ts/utils/didcomm-submit';
@@ -15,6 +19,7 @@ import type {
   BackendSmartAuthOptions,
   BackendSmartAuthResult,
   ClientOptions,
+  CommunicationIngestionInput,
   CreatePhoneReminderTasksInput,
   GrantProfessionalAccessSimpleInput,
   GrantProfessionalAccessSimpleResult,
@@ -34,6 +39,7 @@ import type {
   OrganizationEmployeeCreationInput,
   PollOptions,
   PollResult,
+  RelatedPersonUpsertInput,
   OfferPreview,
   OfferInfo,
   RouteContext,
@@ -96,11 +102,56 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.floor(ms))));
 }
 
+function normalizeCommunicationPathFormatSegment(
+  raw?: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' | 'api' | 'r4' | 'fhir.r4',
+): 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' {
+  const value = String(raw || '').trim().toLowerCase();
+  if (!value || value === 'api' || value === 'org.hl7.fhir.api') return 'org.hl7.fhir.api';
+  if (value === 'r4' || value === 'fhir.r4' || value === 'org.hl7.fhir.r4') return 'org.hl7.fhir.r4';
+  return 'org.hl7.fhir.api';
+}
+
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
     headers: { 'content-type': 'application/json' },
   });
+}
+
+function maybeConvertCommunicationClaimsToFhirR4Payload(
+  payload: Record<string, unknown>,
+  enabled: boolean,
+): Record<string, unknown> {
+  if (!enabled) return payload;
+  const body = payload['body'];
+  if (!body || typeof body !== 'object') return payload;
+  const data = (body as Record<string, unknown>)['data'];
+  if (!Array.isArray(data) || !data.length) return payload;
+
+  const transformed = data.map((entry) => {
+    if (!entry || typeof entry !== 'object') return entry;
+    const entryObj = entry as Record<string, unknown>;
+    if (entryObj['resource']) return entryObj;
+    const meta = entryObj['meta'];
+    if (!meta || typeof meta !== 'object') return entryObj;
+    const claims = (meta as Record<string, unknown>)['claims'];
+    if (!claims || typeof claims !== 'object') return entryObj;
+
+    const converted = transformCommunicationClaimsToResourceFhirR4([claims as Record<string, unknown>], { mode: 'normalize' });
+    const resource = converted.resources[0];
+    return {
+      ...entryObj,
+      resource,
+    };
+  });
+
+  return {
+    ...payload,
+    body: {
+      ...(body as Record<string, unknown>),
+      data: transformed,
+    },
+  };
 }
 
 function isRetryableTransportError(error: unknown): boolean {
@@ -112,12 +163,29 @@ function isDemoMode(mode?: string): boolean {
   return String(mode || '').toLowerCase() === 'demo';
 }
 
+function normalizeBearerToken(rawToken?: string): string | undefined {
+  if (!rawToken) return undefined;
+  const trimmed = String(rawToken).trim();
+  if (!trimmed) return undefined;
+  return trimmed.replace(/^Bearer\s+/i, '').trim() || undefined;
+}
+
 type CachedToken = {
   accessToken: string;
   tokenType: string;
   scopes: string[];
   expiresAt: number; // unix ms
 };
+
+function redactSensitive(value: unknown): Record<string, unknown> {
+  const redacted = JSON.parse(JSON.stringify(value, (key, nestedValue) => {
+    if (/token|authorization|secret|password|assertion/i.test(String(key || ''))) {
+      return '[redacted]';
+    }
+    return nestedValue;
+  }));
+  return redacted && typeof redacted === 'object' ? redacted as Record<string, unknown> : {};
+}
 
 export class DataspaceNodeClient {
   private readonly baseUrl: string;
@@ -128,6 +196,7 @@ export class DataspaceNodeClient {
   private readonly requestTimeoutMs: number;
   private readonly requestRetries: number;
   private readonly allowDemoFallback: boolean;
+  private readonly httpTraceFile?: string;
   private defaultCtx?: RouteContext;
   private defaultTimeoutMs?: number;
   private defaultIntervalMs?: number;
@@ -136,7 +205,7 @@ export class DataspaceNodeClient {
 
   constructor(options: ClientOptions) {
     this.baseUrl = trimTrailingSlash(options.baseUrl);
-    this.bearerToken = options.bearerToken;
+    this.bearerToken = normalizeBearerToken(options.bearerToken);
     this.defaultHeaders = options.defaultHeaders ?? {};
     this.wallet = options.wallet;
     this.defaultCtx = options.ctx;
@@ -152,8 +221,25 @@ export class DataspaceNodeClient {
       Math.floor(options.requestRetries ?? (isDemoMode(this.runtimeMode) || this.runtimeMode === 'development' ? 2 : 0)),
     );
     this.allowDemoFallback = options.allowDemoFallback ?? isDemoMode(this.runtimeMode);
+    this.httpTraceFile = String(process.env.SDK_HTTP_TRACE_FILE || '').trim() || undefined;
+    if (this.httpTraceFile) {
+      mkdirSync(dirname(this.httpTraceFile), { recursive: true });
+    }
   }
 
+  private traceHttp(stage: string, data: Record<string, unknown>): void {
+    if (!this.httpTraceFile) return;
+    const line = JSON.stringify({
+      ts: new Date().toISOString(),
+      stage,
+      ...redactSensitive(data),
+    });
+    appendFileSync(this.httpTraceFile, `${line}\n`);
+  }
+
+  /**
+   * Return the currently configured wallet provider (if any).
+   */
   public getWallet(): WalletProvider | undefined {
     return this.wallet;
   }
@@ -173,24 +259,36 @@ export class DataspaceNodeClient {
     return this.setContext(ctx);
   }
 
+  /**
+   * Update only `tenantId` in default route context.
+   */
   public setTenantId(tenantId: string): this {
     const current = this.defaultCtx ?? { tenantId: '', jurisdiction: '', sector: '' };
     this.defaultCtx = { ...current, tenantId };
     return this;
   }
 
+  /**
+   * Update only `jurisdiction` in default route context.
+   */
   public setJurisdiction(jurisdiction: string): this {
     const current = this.defaultCtx ?? { tenantId: '', jurisdiction: '', sector: '' };
     this.defaultCtx = { ...current, jurisdiction };
     return this;
   }
 
+  /**
+   * Update only `sector` in default route context.
+   */
   public setSector(sector: string): this {
     const current = this.defaultCtx ?? { tenantId: '', jurisdiction: '', sector: '' };
     this.defaultCtx = { ...current, sector };
     return this;
   }
 
+  /**
+   * Set default polling timeout (seconds) for simple helper methods.
+   */
   public setDefaultTimeoutSeconds(seconds: number): this {
     if (Number.isFinite(Number(seconds))) {
       this.defaultTimeoutMs = Math.max(1, Math.floor(Number(seconds) * 1000));
@@ -198,6 +296,9 @@ export class DataspaceNodeClient {
     return this;
   }
 
+  /**
+   * Set default polling interval (seconds) for simple helper methods.
+   */
   public setDefaultIntervalSeconds(seconds: number): this {
     if (Number.isFinite(Number(seconds))) {
       this.defaultIntervalMs = Math.max(1, Math.floor(Number(seconds) * 1000));
@@ -391,14 +492,20 @@ export class DataspaceNodeClient {
     return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/Observation/_batch-response`;
   }
 
-  /** Submit path: individual Communication (FHIR R4, `org.hl7.fhir.r4/Communication/_batch`). */
-  public individualCommunicationBatchPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.r4/Communication/_batch`;
+  /** Submit path: individual Communication (`{format}/Communication/_batch`). */
+  public individualCommunicationBatchPath(
+    ctx: RouteContext,
+    pathFormatSegment: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' = 'org.hl7.fhir.r4',
+  ): string {
+    return this.v1Path(ctx, 'individual', pathFormatSegment, 'Communication', '_batch');
   }
 
   /** Poll path: individual Communication. Pair with `individualCommunicationBatchPath`. */
-  public individualCommunicationPollPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.r4/Communication/_batch-response`;
+  public individualCommunicationPollPath(
+    ctx: RouteContext,
+    pathFormatSegment: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' = 'org.hl7.fhir.r4',
+  ): string {
+    return this.v1Path(ctx, 'individual', pathFormatSegment, 'Communication', '_batch-response');
   }
 
   /** Submit path: individual Task (FHIR R4 API, `org.hl7.fhir.api/Task/_batch`). */
@@ -1657,13 +1764,12 @@ export class DataspaceNodeClient {
     input: GatewayOrganizationActivationInput,
     options?: PollOptions,
   ): Promise<SubmitAndPollResult> {
-    if (!input?.vpToken) {
-      throw new Error('activateOrganizationInGatewayFromIcaProof requires vpToken.');
+    if (!input?.vpToken && !input?.vp) {
+      throw new Error('activateOrganizationInGatewayFromIcaProof requires vpToken or vp.');
     }
 
     const claims: Record<string, unknown> = {
       '@context': 'org.schema',
-      vp_token: input.vpToken,
       ...(input.additionalClaims || {}),
     };
     const requestedMembers = Number.isFinite(Number(input.numberOfMembers))
@@ -1671,23 +1777,18 @@ export class DataspaceNodeClient {
       : 2;
     // Keep gateway-facing claim stable while exposing a generic SDK input.
     claims['org.schema.Organization.numberOfEmployees'] = requestedMembers;
-    if (input.organizationVc) claims['org.schema.OrganizationCredential.jwt'] = input.organizationVc;
-    if (input.legalRepresentativeVc) {
-      claims['org.schema.LegalRepresentativeCredential.jwt'] = input.legalRepresentativeVc;
-    }
+    // Credentials are expected inside VP proof (vp_token / vp), not duplicated as side-fields.
     if (input.regulatoryEvidence) claims['org.schema.Organization.regulatoryEvidence'] = input.regulatoryEvidence;
 
     const payload = createDidcommPlainMessage({
       iss: 'did:web:controller.example.com',
       aud: 'did:web:host.example.com',
       body: {
-        // GW activation parser expects proof material at top-level DIDComm body.
-        vp_token: input.vpToken,
-        ...(input.organizationVc ? { organizationCredential: input.organizationVc } : {}),
-        ...(input.legalRepresentativeVc ? { representativeCredential: input.legalRepresentativeVc } : {}),
         data: [
           {
             type: 'Organization-activation-request-v1.0',
+            ...(input.vpToken ? { vp_token: input.vpToken } : {}),
+            ...(input.vp ? { vp: input.vp } : {}),
             meta: { claims }, // deprecated compatibility
             resource: { meta: { claims } },
           },
@@ -1745,9 +1846,8 @@ export class DataspaceNodeClient {
       hostCtx,
       {
         vpToken: input.vpToken,
+        vp: input.vp,
         numberOfMembers: input.numberOfMembers,
-        organizationVc: input.organizationVc,
-        legalRepresentativeVc: input.legalRepresentativeVc,
         regulatoryEvidence: input.regulatoryEvidence,
         additionalClaims: { ...implicitClaims, ...(input.additionalClaims || {}) },
       },
@@ -2233,6 +2333,52 @@ export class DataspaceNodeClient {
   }
 
   /**
+   * RelatedPerson wrapper: submit contact payload and poll until completion.
+   */
+  public async upsertRelatedPersonAndPoll(
+    ctx: RouteContext | undefined,
+    input: RelatedPersonUpsertInput,
+  ): Promise<SubmitAndPollResult> {
+    const routeCtx = this.requireRouteContext(ctx);
+    const payload = {
+      thid: input.relatedPersonPayload.thid || `relatedperson-${randomUUID()}`,
+      ...input.relatedPersonPayload,
+    };
+    return this.submitAndPoll(
+      this.individualRelatedPersonBatchPath(routeCtx),
+      this.individualRelatedPersonPollPath(routeCtx),
+      payload,
+      input.pollOptions,
+    );
+  }
+
+  /**
+   * Ingestion wrapper: submit Communication payload and let GW process/update index asynchronously.
+   * Use `pathFormatSegment` to select target format path.
+   * Defaults to `org.hl7.fhir.api`.
+   */
+  public async ingestCommunicationAndUpdateIndex(
+    ctx: RouteContext | undefined,
+    input: CommunicationIngestionInput,
+  ): Promise<SubmitAndPollResult> {
+    const routeCtx = this.requireRouteContext(ctx);
+    const payload = {
+      thid: input.communicationPayload.thid || `communication-${randomUUID()}`,
+      ...input.communicationPayload,
+    };
+    const pathFormatSegment = normalizeCommunicationPathFormatSegment(input.pathFormatSegment);
+    const convertedPayload = pathFormatSegment === 'org.hl7.fhir.r4'
+      ? maybeConvertCommunicationClaimsToFhirR4Payload(payload, input.autoConvertClaimsToFhirR4 !== false)
+      : payload;
+    return this.submitAndPoll(
+      this.individualCommunicationBatchPath(routeCtx, pathFormatSegment),
+      this.individualCommunicationPollPath(routeCtx, pathFormatSegment),
+      convertedPayload,
+      input.pollOptions,
+    );
+  }
+
+  /**
    * UC 5.6 consent helper from minimal frontend fields.
    * Builds canonical Consent claims and submits/polls the Consent batch.
    */
@@ -2360,9 +2506,30 @@ export class DataspaceNodeClient {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
       try {
+        this.traceHttp('request', {
+          attempt,
+          method: String(init.method || 'GET').toUpperCase(),
+          url,
+          headers: init.headers,
+          payload,
+        });
         const response = await fetch(url, { ...init, signal: controller.signal });
         clearTimeout(timeout);
+        const responseBodyRaw = await response.clone().text();
+        this.traceHttp('response', {
+          attempt,
+          method: String(init.method || 'GET').toUpperCase(),
+          url,
+          status: response.status,
+          ok: response.ok,
+          bodyRaw: responseBodyRaw,
+        });
         if (response.status >= 500 && attempt < attempts) {
+          this.traceHttp('retry', {
+            attempt,
+            reason: `http_${response.status}`,
+            url,
+          });
           await sleep(50);
           continue;
         }
@@ -2370,7 +2537,18 @@ export class DataspaceNodeClient {
       } catch (error) {
         clearTimeout(timeout);
         lastError = error;
+        this.traceHttp('error', {
+          attempt,
+          method: String(init.method || 'GET').toUpperCase(),
+          url,
+          error: error instanceof Error ? error.message : String(error),
+        });
         if (attempt < attempts && isRetryableTransportError(error)) {
+          this.traceHttp('retry', {
+            attempt,
+            reason: 'transport_error',
+            url,
+          });
           await sleep(50);
           continue;
         }
@@ -2470,7 +2648,7 @@ export class DataspaceNodeClient {
           status: 'COMPLETED',
           access_token: 'demo-access-token-001',
           token_type: 'Bearer',
-          scope: String((job?.payload as Record<string, unknown> | undefined)?.scope || 'organization/Composition.rs?subject=did:web:demo:individual:001&section=LOINC|48765-2').trim(),
+          scope: String((job?.payload as Record<string, unknown> | undefined)?.scope || `organization/Composition.rs?subject=did:web:demo:individual:001&section=${buildLoincToken('48765-2')}`).trim(),
           expires_in: 3600,
           demo: true,
           thid,

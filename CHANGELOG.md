@@ -12,6 +12,13 @@ All notable changes to this project will be documented in this file.
 - Explicit integration guidance that SDK consumers should use SDK path helpers instead of manually composing host prefixes/routes.
 
 ### Changed
+- Live UC5 IPS flow assertions now validate DocumentReference retrieval by canonical hash claim (`DocumentReference.contenthash`) after Communication ingestion.
+- Documentation updated to clarify:
+  - atomic Communication conversion profile vs native FHIR Communication cardinalities,
+  - DocumentReference logical identifier (`identifier`) vs content hash (`contenthash`) responsibilities,
+  - hash-based Bundle search examples for both `api` and `r4` path families.
+
+### Changed
 - Contact identity contract for onboarding/controller flows is now documented as dual-channel:
   - Email (`org.schema.Person.email`)
   - Telephone (`org.schema.Person.telephone`
