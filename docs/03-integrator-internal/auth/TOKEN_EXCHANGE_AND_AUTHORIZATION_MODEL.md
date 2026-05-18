@@ -62,8 +62,9 @@ Example DID patterns used in the gateway profiles:
 - Legal organization identity: `did:web:<provider.domain>:organization:taxid:<VAT>`
 - Legal organization member binding: `did:web:<provider.domain>:organization:taxid:<VAT>:member:<multihash(email)>:role:<role>`
 - Legal representative binding: `memberOf.taxID` links the person credential to the organization tax identifier
+- Canonical member DID rule: member DID always starts with owner DID and appends `:member:<member-id>:<role>`.
 
-In this profile family, `Consent.actor-identifier` can resolve to a DID, an email address, or a telephone URI such as `tel:+34600111222` depending on the channel used to identify the actor.
+In this profile family, `Consent.actor-identifier` can resolve to DID-based actor identity claims.
 
 `did:web` is domain-based and resolves through a web host name; it is not itself an ISO 3166 country or region code. Country/region belongs in the deployment profile or jurisdiction metadata, not in the DID method syntax.
 
@@ -85,7 +86,7 @@ Consent is modeled as a policy document that is turned into a query-optimized ru
 | `Consent.date` | Date the consent was granted | `2026-05-07` |
 | `Consent.purpose` | Purpose of use | `TREAT` |
 | `Consent.action` | Comma-separated list of authorized Composition scopes and EEDS history sections, expressed with FHIR-style scope strings and `system|code` pairs | `organization/Composition.rs,organization/Composition.summary,LOINC|48765-2,LOINC|10160-0` |
-| `Consent.actor-identifier` | Actor whose access is being controlled; canonical values may be `did:web:...`, `email`, or `tel:+...` depending on the profile | `did:web:hospital.example.com` |
+| `Consent.actor-identifier` | Actor whose access is being controlled; canonical value in this profile is DID-based actor identity | `did:web:hospital.example.com` |
 | `Consent.actor-role` | Occupation/role classifier for the actor; profile input may be a comma-separated list of ISCO-08 or FHIR role tokens that is normalized before storage | `ISCO-08|2211,v3-RoleCode|RESPRSN` |
 | `Consent.attachment-contentType` | Media type of the attached policy artifact | `application/odrl+json` |
 | `Consent.attachment-data` | Base64 encoded attachment payload | `e30=` |

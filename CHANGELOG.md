@@ -2,6 +2,12 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.8 - 2026-05-18
+
+### Changed
+- Updated dependency to `gdc-common-utils-ts@^1.4.16`.
+- Documented canonical member DID composition (`owner did:web` + `:member:<member-id>:<role>`) in auth model docs.
+
 ## [Unreleased] - 2026-05-04
 
 ### Added
@@ -23,7 +29,7 @@ All notable changes to this project will be documented in this file.
 ### Changed
 - Contact identity contract for onboarding/controller flows is now documented as dual-channel:
   - Email (`org.schema.Person.email`)
-  - Telephone (`org.schema.Person.telephone`
+  - Additional identity channel claims as profile-defined
 - Offer/Order process clarified as part of the onboarding contract even when commercial amount is zero:
   - Offer extraction for UI review/acceptance
   - Explicit Order acceptance using offer identifier
