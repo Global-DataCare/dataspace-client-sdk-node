@@ -324,7 +324,7 @@ export type IndividualOrganizationBootstrapSimpleInput = {
   alternateName: string;
   controllerEmail?: string;
   controllerTelephone?: string;
-  controllerRole?: string; // default |RESPRSN
+  controllerRole?: string; // default RESPRSN
   timeoutSeconds?: number;
   intervalSeconds?: number;
   additionalClaims?: Record<string, unknown>;

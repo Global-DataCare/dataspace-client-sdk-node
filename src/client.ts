@@ -2203,7 +2203,7 @@ export class DataspaceNodeClient {
     if (!controllerEmail && !controllerTelephone) {
       throw new Error('bootstrapIndividualOrganizationSimple requires controllerEmail or controllerTelephone.');
     }
-    const controllerRole = String(input.controllerRole || '|RESPRSN').trim();
+    const controllerRole = String(input.controllerRole || 'RESPRSN').trim();
 
     const claims: Record<string, unknown> = {
       '@context': 'org.schema',

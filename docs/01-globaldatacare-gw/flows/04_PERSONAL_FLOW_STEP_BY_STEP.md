@@ -12,14 +12,14 @@ Security note:
 const started = await client.startIndividualOrganizationSimple({
   alternateName,
   controllerEmail,        // or controllerTelephone
-  controllerRole: '|RESPRSN',
+  controllerRole: 'RESPRSN',
 });
 ```
 
 
 Role format note:
-- use `codingSystem|codeValue` (FHIR-style split by `|`).
-- if coding system is omitted, keep leading pipe and send only code value, for example `|RESPRSN`.
+- canonical value for this flow is plain code `RESPRSN`.
+- legacy tokenized values like `v3-RoleCode|RESPRSN` are accepted for backward compatibility.
 
 **Nota sobre RESPRSN:**
 El código `RESPRSN` significa "Responsible Party" según el estándar FHIR. Puedes consultar la definición oficial en: [HL7 FHIR RoleCode - Responsible Party](https://terminology.hl7.org/CodeSystem-v3-RoleCode.html)

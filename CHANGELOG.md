@@ -2,10 +2,16 @@
 
 All notable changes to this project will be documented in this file.
 
+## 0.2.9 - 2026-05-18
+
+### Changed
+- Updated dependency to `gdc-common-utils-ts@^1.4.18`.
+- Canonicalized onboarding role examples/defaults to code value `RESPRSN` (legacy tokenized values remain accepted by shared policy normalizer).
+
 ## 0.2.8 - 2026-05-18
 
 ### Changed
-- Updated dependency to `gdc-common-utils-ts@^1.4.16`.
+- Updated dependency to `gdc-common-utils-ts@^1.4.17`.
 - Documented canonical member DID composition (`owner did:web` + `:member:<member-id>:<role>`) in auth model docs.
 
 ## [Unreleased] - 2026-05-04
