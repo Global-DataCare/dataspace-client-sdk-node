@@ -55,10 +55,15 @@
           "givenName": "GIVEN NAME",
           "hasOccupation": {
             "@type": "Occupation",
-            "identifier": "urn:ilo:ilostat:isco-08:1120",
-            "name": "LegalRepresentative"
+            "identifier": {
+              "value": "RESPRSN"
+            },
+            "name": "ResponsibleParty"
           },
           "id": "did:web:controller.example.org",
+          "hasCredential": {
+            "material": "sha256:legal-representative-email-hash"
+          },
           "identifier": "IDCES-11223344",
           "memberOf": {
             "@type": "Organization",

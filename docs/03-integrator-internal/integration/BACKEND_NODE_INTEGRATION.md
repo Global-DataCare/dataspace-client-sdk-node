@@ -246,7 +246,7 @@ Strict DIDComm mode:
 - use the derived keypair for the active `purpose+algorithm`
 
 Flow links:
-- `CONTROLLER_FLOW_STEP_BY_STEP.md`
-- `LEGAL_ORGANIZATION_FLOW_STEP_BY_STEP.md`
-- `PRACTITIONER_FLOW_STEP_BY_STEP.md`
-- `PERSONAL_FLOW_STEP_BY_STEP.md`
+- `01-globaldatacare-gw/flows/02_CONTROLLER_FLOW_STEP_BY_STEP.md`
+- `01-globaldatacare-gw/flows/01_LEGAL_ORGANIZATION_FLOW_STEP_BY_STEP.md`
+- `01-globaldatacare-gw/flows/03_PRACTITIONER_FLOW_STEP_BY_STEP.md`
+- `01-globaldatacare-gw/flows/04_PERSONAL_FLOW_STEP_BY_STEP.md`

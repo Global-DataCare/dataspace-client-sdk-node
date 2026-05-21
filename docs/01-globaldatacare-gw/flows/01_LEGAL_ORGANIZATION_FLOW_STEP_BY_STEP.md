@@ -59,7 +59,7 @@ Use `profileContext` for role/organization runtime context and `sessionContext` 
 9. If license seats are exhausted: receive `Employee-license-offer-v1.0`, accept, submit `licenseOrder`, retry employee create.
 
 Detailed guide (single source of truth):
-- `CONTROLLER_FLOW_STEP_BY_STEP.md`
+- `02_CONTROLLER_FLOW_STEP_BY_STEP.md`
 
 ## Phase B: practitioner flow (authoritative)
 
@@ -69,14 +69,14 @@ Detailed guide (single source of truth):
 4. Call protected organization/business endpoints.
 
 Detailed guide (single source of truth):
-- `PRACTITIONER_FLOW_STEP_BY_STEP.md`
+- `03_PRACTITIONER_FLOW_STEP_BY_STEP.md`
 
 ## Scope of this file
 
 - Keep this file as top-level legal organization map.
 - Put implementation details in:
-  - `CONTROLLER_FLOW_STEP_BY_STEP.md`
-  - `PRACTITIONER_FLOW_STEP_BY_STEP.md`
+  - `02_CONTROLLER_FLOW_STEP_BY_STEP.md`
+  - `03_PRACTITIONER_FLOW_STEP_BY_STEP.md`
   - `BACKEND_NODE_INTEGRATION.md`
 
 Related references:

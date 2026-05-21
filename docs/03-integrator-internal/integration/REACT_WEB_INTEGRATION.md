@@ -26,7 +26,7 @@ Minimum payload to backend endpoint `/api/onboarding/legal/activate`:
 Notes:
 - `jurisdiction` is explicit route context. Do not infer from VAT.
 - `sector` is explicit route context. Do not infer from DID.
-- `organizationVc` / `legalRepresentativeVc` can be sent only for legacy compatibility.
+- include proof only as `vpToken` (JWT VP) or `vp` (JSON VP).
 
 ## 3. Frontend code example
 

@@ -63,8 +63,6 @@ test('Use cases org onboarding flow: activate org → create employee → activa
       { jurisdiction: 'ES', sector: 'health-care' },
       {
         vpToken: 'vp-token-org-001',
-        organizationVc: 'org-vc-jwt',
-        legalRepresentativeVc: 'legal-vc-jwt',
       },
       pollOptions,
     );

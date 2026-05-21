@@ -241,6 +241,28 @@ test('submitAndPoll uses DIDComm plain submit and async poll until non-202', asy
   }
 });
 
+test('normalizes bearer token input and always sends a single Bearer prefix', async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    return jsonResponse({ accepted: true }, 202);
+  };
+
+  try {
+    const client = new DataspaceNodeClient({
+      baseUrl: 'http://localhost:3000',
+      bearerToken: 'Bearer    token-from-sdk',
+    });
+    await client.postJson('/host/cds-ES/v1/health-care/identity/oidc/credential', {});
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].options.headers.Authorization, 'Bearer token-from-sdk');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
 test('activateOrganizationInGatewayFromIcaProof submits activation and polls to completion', async () => {
   const calls = [];
   const originalFetch = globalThis.fetch;
@@ -259,8 +281,6 @@ test('activateOrganizationInGatewayFromIcaProof submits activation and polls to 
       { jurisdiction: 'ES', sector: 'test' },
       {
         vpToken: 'vp-token-001',
-        organizationVc: 'org-vc-jwt',
-        legalRepresentativeVc: 'legal-vc-jwt',
       },
       { timeoutMs: 5000, intervalMs: 1 },
     );
@@ -269,9 +289,9 @@ test('activateOrganizationInGatewayFromIcaProof submits activation and polls to 
     assert.equal(result.poll.status, 200);
     assert.equal(calls[0].url, 'http://localhost:3000/host/cds-ES/v1/test/registry/org.schema/Organization/_activate');
     const submitPayload = JSON.parse(calls[0].options.body);
-    assert.equal(submitPayload.body.vp_token, 'vp-token-001');
-    assert.equal(submitPayload.body.organizationCredential, 'org-vc-jwt');
-    assert.equal(submitPayload.body.representativeCredential, 'legal-vc-jwt');
+    assert.equal(submitPayload.body?.data?.[0]?.vp_token, 'vp-token-001');
+    assert.equal(submitPayload.body.organizationCredential, undefined);
+    assert.equal(submitPayload.body.representativeCredential, undefined);
   } finally {
     globalThis.fetch = originalFetch;
   }
@@ -433,10 +453,46 @@ test('bootstrapIndividualOrganizationSimple registers individual org and confirm
     assert.equal(registrationClaims['org.schema.Organization.alternateName'], 'ana');
     assert.equal(registrationClaims['org.schema.Service.category'], 'health-care');
     assert.equal(registrationClaims['org.schema.Person.telephone'], 'tel:+34600111222');
-    assert.equal(registrationClaims['org.schema.Person.hasOccupation'], '|RESPRSN');
+    assert.equal(registrationClaims['org.schema.Person.hasOccupation'], 'RESPRSN');
   } finally {
     globalThis.fetch = originalFetch;
   }
+});
+
+test('bootstrapIndividualOrganizationSimple is only explicit composition of start + confirm helpers', async () => {
+  const client = new DataspaceNodeClient({
+    baseUrl: 'http://localhost:3000',
+    ctx: { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' },
+  });
+
+  const calls = [];
+  client.startIndividualOrganizationSimple = async (input) => {
+    calls.push(['start', input]);
+    return {
+      registration: { submit: { status: 202, body: {} }, poll: { status: 200, body: {}, attempts: 1 } },
+      offerId: 'urn:offer:family-compose-001',
+      offerPreview: {},
+    };
+  };
+  client.confirmIndividualOrganizationOrderSimple = async (input) => {
+    calls.push(['confirm', input]);
+    return { submit: { status: 202, body: {} }, poll: { status: 200, body: {}, attempts: 1 } };
+  };
+
+  const result = await client.bootstrapIndividualOrganizationSimple({
+    alternateName: 'ana',
+    controllerTelephone: 'tel:+34600111222',
+    timeoutSeconds: 9,
+    intervalSeconds: 2,
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], 'start');
+  assert.equal(calls[1][0], 'confirm');
+  assert.equal(calls[1][1].offerId, 'urn:offer:family-compose-001');
+  assert.equal(calls[1][1].timeoutSeconds, 9);
+  assert.equal(calls[1][1].intervalSeconds, 2);
+  assert.equal(result.offerId, 'urn:offer:family-compose-001');
 });
 
 test('startIndividualOrganizationSimple + confirmIndividualOrganizationOrderSimple support explicit offer acceptance UX', async () => {
@@ -499,6 +555,196 @@ test('importIpsOrFhirAndUpdateIndex submits Composition in individual section', 
     assert.equal(
       calls[0].url,
       'http://localhost:3000/acme/cds-ES/v1/health-care/individual/org.hl7.fhir.r4/Composition/_batch',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('ingestCommunicationAndUpdateIndex submits Communication in API mode by default', async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    if (calls.length === 1) return jsonResponse({ accepted: true }, 202);
+    return jsonResponse({ status: 'COMPLETED' }, 200);
+  };
+
+  try {
+    const client = new DataspaceNodeClient({ baseUrl: 'http://localhost:3000', bearerToken: 'smart-token' });
+    const ctx = { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' };
+    const result = await client.ingestCommunicationAndUpdateIndex(ctx, {
+      communicationPayload: { body: { data: [{ type: 'Communication-ingestion-request-v1.0' }] } },
+      pollOptions: { timeoutMs: 5000, intervalMs: 1 },
+    });
+
+    assert.equal(result.poll.status, 200);
+    assert.equal(
+      calls[0].url,
+      'http://localhost:3000/acme/cds-ES/v1/health-care/individual/org.hl7.fhir.api/Communication/_batch',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('ingestCommunicationAndUpdateIndex supports explicit pathFormatSegment', async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    if (calls.length === 1) return jsonResponse({ accepted: true }, 202);
+    return jsonResponse({ status: 'COMPLETED' }, 200);
+  };
+
+  try {
+    const client = new DataspaceNodeClient({ baseUrl: 'http://localhost:3000', bearerToken: 'smart-token' });
+    const ctx = { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' };
+    const result = await client.ingestCommunicationAndUpdateIndex(ctx, {
+      communicationPayload: { body: { data: [{ type: 'Communication-ingestion-request-v1.0' }] } },
+      pathFormatSegment: 'org.hl7.fhir.r4',
+      pollOptions: { timeoutMs: 5000, intervalMs: 1 },
+    });
+
+    assert.equal(result.poll.status, 200);
+    assert.equal(
+      calls[0].url,
+      'http://localhost:3000/acme/cds-ES/v1/health-care/individual/org.hl7.fhir.r4/Communication/_batch',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('ingestCommunicationAndUpdateIndex auto-converts meta.claims to resource for fhir.r4 and preserves resource.meta.claims', async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options, body: options?.body ? JSON.parse(options.body) : undefined });
+    if (calls.length === 1) return jsonResponse({ accepted: true }, 202);
+    return jsonResponse({ status: 'COMPLETED' }, 200);
+  };
+
+  try {
+    const client = new DataspaceNodeClient({ baseUrl: 'http://localhost:3000', bearerToken: 'smart-token' });
+    const ctx = { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' };
+    await client.ingestCommunicationAndUpdateIndex(ctx, {
+      pathFormatSegment: 'fhir.r4',
+      communicationPayload: {
+        body: {
+          data: [{
+            type: 'Communication-ingestion-request-v1.0',
+            meta: {
+              claims: {
+                '@context': 'org.hl7.fhir.r4',
+                'Communication.subject': 'did:web:subject.example',
+                'Communication.recipient': 'did:web:recipient.example',
+                'Communication.sender': 'did:web:sender.example',
+                'Communication.text': 'Appointment reminder',
+                'Communication.content-reference': 'Appointment/appt-001',
+              },
+            },
+          }],
+        },
+      },
+      pollOptions: { timeoutMs: 5000, intervalMs: 1 },
+    });
+
+    const entry = calls[0].body?.body?.data?.[0];
+    assert.equal(entry.resource?.resourceType, 'Communication');
+    assert.equal(entry.resource?.payload?.[0]?.contentReference?.reference, 'Appointment/appt-001');
+    assert.equal(entry.resource?.meta?.claims?.['Communication.text'], 'Appointment reminder');
+    assert.equal(entry.resource?.meta?.claims?.['Communication.sender'], 'did:web:sender.example');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('ingestCommunicationAndUpdateIndex accepts r4/api aliases in pathFormatSegment', async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    if (calls.length === 1) return jsonResponse({ accepted: true }, 202);
+    return jsonResponse({ status: 'COMPLETED' }, 200);
+  };
+
+  try {
+    const client = new DataspaceNodeClient({ baseUrl: 'http://localhost:3000', bearerToken: 'smart-token' });
+    const ctx = { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' };
+    const resultR4 = await client.ingestCommunicationAndUpdateIndex(ctx, {
+      communicationPayload: { body: { data: [{ type: 'Communication-ingestion-request-v1.0' }] } },
+      pathFormatSegment: 'fhir.r4',
+      pollOptions: { timeoutMs: 5000, intervalMs: 1 },
+    });
+    const resultApi = await client.ingestCommunicationAndUpdateIndex(ctx, {
+      communicationPayload: { body: { data: [{ type: 'Communication-ingestion-request-v1.0' }] } },
+      pathFormatSegment: 'api',
+      pollOptions: { timeoutMs: 5000, intervalMs: 1 },
+    });
+
+    assert.equal(resultR4.poll.status, 200);
+    assert.equal(resultApi.poll.status, 200);
+    assert.equal(
+      calls[0].url,
+      'http://localhost:3000/acme/cds-ES/v1/health-care/individual/org.hl7.fhir.r4/Communication/_batch',
+    );
+    assert.equal(
+      calls[2].url,
+      'http://localhost:3000/acme/cds-ES/v1/health-care/individual/org.hl7.fhir.api/Communication/_batch',
+    );
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('upsertRelatedPersonAndPoll submits to RelatedPerson batch/poll endpoints', async () => {
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), options });
+    if (calls.length === 1) return jsonResponse({ accepted: true }, 202);
+    return jsonResponse({ status: 'COMPLETED' }, 200);
+  };
+
+  try {
+    const client = new DataspaceNodeClient({ baseUrl: 'http://localhost:3000', bearerToken: 'controller-token' });
+    const ctx = { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' };
+    const result = await client.upsertRelatedPersonAndPoll(ctx, {
+      relatedPersonPayload: {
+        body: {
+          data: [
+            {
+              type: 'RelatedPerson-ingestion-request-v1.0',
+              meta: {
+                claims: {
+                  '@context': 'org.hl7.fhir.api',
+                  'RelatedPerson.patient': 'did:web:api.acme.org:individual:123',
+                  'RelatedPerson.identifier': 'urn:uuid:rel-001',
+                  'RelatedPerson.relationship': 'http://terminology.hl7.org/CodeSystem/v3-RoleCode|PRN',
+                  'RelatedPerson.name': 'Jane Doe',
+                },
+              },
+            },
+          ],
+        },
+      },
+      pollOptions: { timeoutMs: 5000, intervalMs: 1 },
+    });
+
+    assert.equal(result.poll.status, 200);
+    assert.equal(
+      calls[0].url,
+      'http://localhost:3000/acme/cds-ES/v1/health-care/individual/org.hl7.fhir.api/RelatedPerson/_batch',
+    );
+    assert.equal(
+      calls[1].url,
+      'http://localhost:3000/acme/cds-ES/v1/health-care/individual/org.hl7.fhir.api/RelatedPerson/_batch-response',
     );
   } finally {
     globalThis.fetch = originalFetch;
@@ -1125,7 +1371,8 @@ test('activateOrganizationInGatewaySimple maps single-object input and seconds o
     assert.equal(result.poll.status, 200);
     assert.equal(calls[0].url, 'http://localhost:3000/host/cds-ES/v1/health-care/registry/org.schema/Organization/_activate');
     const claims = calls[0].body?.body?.data?.[0]?.meta?.claims || {};
-    assert.equal(claims.vp_token, 'vp-001');
+    assert.equal(calls[0].body?.body?.data?.[0]?.vp_token, 'vp-001');
+    assert.equal(claims.vp_token, undefined);
     assert.equal(claims['org.schema.Organization.numberOfEmployees'], 3);
     assert.equal(claims['org.schema.Service.category'], 'health-care');
     assert.equal(claims['org.schema.Service.identifier'], 'did:web:api.acme.org');
