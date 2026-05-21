@@ -25,6 +25,8 @@ Primary references:
 - `DocumentReference.identifier` = logical identifier (UUID/URN)
 - `DocumentReference.contenthash` = CID/hash for integrity and hash-based retrieval.
 3. For live E2E in core flows, avoid silent soft-pass on critical assertions.
+4. Canonical representative role code in SDK flow defaults/examples is `RESPRSN` (plain code).
+5. Legacy tokenized role values may be accepted for compatibility, but must not be used as canonical docs/examples.
 
 ## TDD Policy
 1. Add failing unit/integration/E2E assertion first.
@@ -41,6 +43,7 @@ Required when flow changes:
 - `npm run docs:validate`
 - Live E2E when changing core UC flow:
   - `RUN_LIVE_GW_E2E=1 npm run test:e2e:live-use-cases`
+  - preferred real-orchestrated validation: `../gwtemplate-node-ts/scripts/run-secure-e2e-google-user.sh`
 
 ## Release Discipline
 - Update `CHANGELOG.md` under `Unreleased` with concrete API/flow changes.
@@ -52,3 +55,11 @@ For every public method:
 2. Entry in API table.
 3. Dedicated method doc in `docs/sdk-api/methods` (or explicit exception).
 4. UC placement (when/why used) documented in step-by-step flow docs.
+
+## Core MVP Output Targets
+1. Legal org onboarding + offer/order acceptance.
+2. Employee bootstrap via token exchange + DCR.
+3. Individual organization bootstrap.
+4. Consent grant + SMART token request.
+5. Communication ingestion to update index + retrieval checks.
+6. RelatedPerson baseline flow.

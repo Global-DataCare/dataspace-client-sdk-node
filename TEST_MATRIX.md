@@ -1,5 +1,7 @@
 # TEST_MATRIX - dataspace-client-sdk-node
 
+Core live coverage summary lives in `TEST_CORE.md`.
+
 ## Goal
 Validate SDK contracts, orchestration behavior, and GW live interoperability.
 

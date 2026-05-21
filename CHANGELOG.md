@@ -13,6 +13,24 @@ All notable changes to this project will be documented in this file.
 
 ### Documentation
 - Added explicit npm publishing guide for this package, including `NPM_TOKEN` bootstrap from `~/.zshrc`.
+- Marked this package as a legacy migration source toward `gdc-sdk-core-ts` and `gdc-sdk-node-ts`.
+- Aligned the actor/capability bridge to consume shared core contracts instead of maintaining an independent local matrix.
+
+### Migration
+- Switched legacy actor-scoped orchestration exports (`HostOnboardingSdk`, `OrganizationControllerSdk`, `OrganizationEmployeeSdk`, `IndividualControllerSdk`, `IndividualMemberSdk`, `ProfessionalSdk`) to reexport the implementations from `gdc-sdk-node-ts`.
+- Switched legacy `PersonalSdk` to reexport the implementation from `gdc-sdk-node-ts`.
+- Switched legacy `ActorSession` to a compatibility wrapper over `gdc-sdk-node-ts` session logic while preserving constructor order for existing consumers.
+- Switched legacy GDC session-bridge helpers to compatibility wrappers over `gdc-sdk-node-ts` bridge logic.
+- Added `DataspaceNodeRuntimeClientAdapter` as an explicit adapter from `DataspaceNodeClient` to the `GdcNodeRuntimeClient` contract used by `gdc-sdk-node-ts`.
+- Replaced structural-only legacy facade compatibility with explicit wrapper classes that adapt `DataspaceNodeClient` into the target runtime client before delegating to `gdc-sdk-node-ts`.
+- Switched legacy `DataspaceNodeClient.submitAndPoll` to delegate to `gdc-sdk-node-ts` helper logic, reducing local ownership of async orchestration behavior to `submitBatch` and `pollUntilComplete`.
+- Switched legacy `DataspaceNodeClient.pollUntilComplete` to delegate its polling loop to `gdc-sdk-node-ts`, keeping only the transport-specific `pollBatchResponse` implementation locally.
+- Switched legacy `resolveSimplePollOptions`, `confirmLegalOrganizationOrderSimple`, and `confirmIndividualOrganizationOrderSimple` to delegate to converged helpers in `gdc-sdk-node-ts`.
+- Switched legacy `startIndividualOrganizationSimple` to delegate to converged helper logic in `gdc-sdk-node-ts`.
+- Switched legacy `requestSmartTokenSimple`, `activateEmployeeDeviceWithActivationCode`, and `activateEmployeeDeviceWithActivationCodeSimple` to delegate to converged helper logic in `gdc-sdk-node-ts`.
+- Switched legacy `createOrganizationEmployee`, `importIpsOrFhirAndUpdateIndex`, `upsertRelatedPersonAndPoll`, `ingestCommunicationAndUpdateIndex`, `grantProfessionalAccessSimple`, and `generateDigitalTwinFromSubjectData` to delegate to converged helper logic in `gdc-sdk-node-ts`.
+- Kept `bootstrapIndividualOrganizationSimple` only as legacy compatibility on the old SDK surface; removed it from the target `gdc-sdk-node-ts` actor-facade surface.
+- Added TDD guardrail that `bootstrapIndividualOrganizationSimple` must remain transparent composition of `startIndividualOrganizationSimple` plus `confirmIndividualOrganizationOrderSimple`, instead of becoming a hidden shortcut flow.
 
 ## 0.2.9 - 2026-05-18
 

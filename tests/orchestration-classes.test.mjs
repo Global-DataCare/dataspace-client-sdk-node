@@ -38,3 +38,9 @@ test('ProfessionalSdk delegates to DataspaceNodeClient methods', async () => {
   assert.equal(calls.length, 3);
 });
 
+test('actor facades keep role-scoped surface separation', async () => {
+  assert.equal(typeof ProfessionalSdk.prototype.bootstrapIndividualOrganizationSimple, 'undefined');
+  assert.equal(typeof ProfessionalSdk.prototype.generateDigitalTwinFromSubjectData, 'undefined');
+  assert.equal(typeof PersonalSdk.prototype.activateOrganizationInGatewayFromIcaProof, 'undefined');
+  assert.equal(typeof PersonalSdk.prototype.createOrganizationEmployee, 'undefined');
+});

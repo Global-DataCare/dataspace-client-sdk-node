@@ -1,8 +1,8 @@
 import type { DataspaceNodeClient } from '../client.js';
-import { GdcPersonalSdk } from '../../../gdc-sdk-node-ts/dist/index.js';
+import { GdcIndividualControllerSdk } from '../../../gdc-sdk-node-ts/dist/index.js';
 import { DataspaceNodeRuntimeClientAdapter } from '../gdc-node-runtime-client-adapter.js';
 
-export class PersonalSdk extends GdcPersonalSdk {
+export class IndividualControllerSdk extends GdcIndividualControllerSdk {
   private readonly rawClient: DataspaceNodeClient;
 
   constructor(client: DataspaceNodeClient) {

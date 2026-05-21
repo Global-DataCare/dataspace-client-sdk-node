@@ -459,6 +459,42 @@ test('bootstrapIndividualOrganizationSimple registers individual org and confirm
   }
 });
 
+test('bootstrapIndividualOrganizationSimple is only explicit composition of start + confirm helpers', async () => {
+  const client = new DataspaceNodeClient({
+    baseUrl: 'http://localhost:3000',
+    ctx: { tenantId: 'acme', jurisdiction: 'ES', sector: 'health-care' },
+  });
+
+  const calls = [];
+  client.startIndividualOrganizationSimple = async (input) => {
+    calls.push(['start', input]);
+    return {
+      registration: { submit: { status: 202, body: {} }, poll: { status: 200, body: {}, attempts: 1 } },
+      offerId: 'urn:offer:family-compose-001',
+      offerPreview: {},
+    };
+  };
+  client.confirmIndividualOrganizationOrderSimple = async (input) => {
+    calls.push(['confirm', input]);
+    return { submit: { status: 202, body: {} }, poll: { status: 200, body: {}, attempts: 1 } };
+  };
+
+  const result = await client.bootstrapIndividualOrganizationSimple({
+    alternateName: 'ana',
+    controllerTelephone: 'tel:+34600111222',
+    timeoutSeconds: 9,
+    intervalSeconds: 2,
+  });
+
+  assert.equal(calls.length, 2);
+  assert.equal(calls[0][0], 'start');
+  assert.equal(calls[1][0], 'confirm');
+  assert.equal(calls[1][1].offerId, 'urn:offer:family-compose-001');
+  assert.equal(calls[1][1].timeoutSeconds, 9);
+  assert.equal(calls[1][1].intervalSeconds, 2);
+  assert.equal(result.offerId, 'urn:offer:family-compose-001');
+});
+
 test('startIndividualOrganizationSimple + confirmIndividualOrganizationOrderSimple support explicit offer acceptance UX', async () => {
   const calls = [];
   const originalFetch = globalThis.fetch;

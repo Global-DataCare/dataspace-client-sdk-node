@@ -1,13 +1,32 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { appendFileSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
+import {
+  activateEmployeeDeviceWithActivationCodeSimpleWithDeps,
+  activateEmployeeDeviceWithActivationCodeWithDeps,
+  createOrganizationEmployeeWithDeps,
+  confirmLegalOrganizationOrderSimpleWithDeps,
+  confirmIndividualOrganizationOrderSimpleWithDeps,
+  generateDigitalTwinFromSubjectDataWithDeps,
+  grantProfessionalAccessSimpleWithDeps,
+  importIpsOrFhirAndUpdateIndexWithDeps,
+  ingestCommunicationAndUpdateIndexWithDeps,
+  pollUntilCompleteWithMethod,
+  requestSmartTokenSimpleWithDeps,
+  resolveSimplePollOptions,
+  startIndividualOrganizationSimpleWithDeps,
+  submitAndPollWithMethods,
+  upsertRelatedPersonAndPollWithDeps,
+} from '../../gdc-sdk-node-ts/dist/index.js';
+import { DataspaceNodePathBuilder } from './client-paths.js';
+import { DataspaceNodeHttpRuntime } from './client-http-runtime.js';
+import { DataspaceNodeAuthRuntime } from './client-auth-runtime.js';
+import { DataspaceNodeResponseHelpers } from './client-response-helpers.js';
 import { createDidcommPlainMessage } from './builders.js';
-import { buildLoincToken } from './canonical.js';
 import { transformCommunicationClaimsToResourceFhirR4 } from './communication-transform.js';
 import { buildConsentClaimsSimpleWithCid } from 'gdc-common-utils-ts/utils/consent';
 import { generateServiceId } from 'gdc-common-utils-ts/utils/did';
-import { submitDidcomm, type DidcommFetchInit } from 'gdc-common-utils-ts/utils/didcomm-submit';
-import { ClaimsOfferSchemaorg, ClaimsPersonSchemaorg } from 'gdc-common-utils-ts/constants/schemaorg';
+import { ClaimsPersonSchemaorg } from 'gdc-common-utils-ts/constants/schemaorg';
 import {
   MedicationStatementClaimsFhirApi,
   MedicationStatementClaimsFhirApiExtended,
@@ -60,63 +79,16 @@ import type {
 } from './types.js';
 import type { WalletProvider } from './sdk/dataspace-wallet-sdk-node/provider.js';
 import type { PublicJwk, WalletContext } from './sdk/dataspace-wallet-sdk-node/types.js';
-
-function trimTrailingSlash(value: string): string {
-  return value.replace(/\/+$/, '');
-}
-
-function encode(value: string): string {
-  return encodeURIComponent(value);
-}
-
-function toDidWebFromUrlOrHost(raw: string): string | undefined {
-  const v = String(raw || '').trim();
-  if (!v) return undefined;
-  if (v.startsWith('did:web:')) return v;
-  const host = v
-    .replace(/^https?:\/\//i, '')
-    .replace(/\/.*$/, '')
-    .trim()
-    .toLowerCase();
-  if (!host) return undefined;
-  return `did:web:${host}`;
-}
-
-function parseRetryAfterMs(header: string | null): number | undefined {
-  if (!header) return undefined;
-  const raw = header.trim();
-  if (!raw) return undefined;
-  const seconds = Number(raw);
-  if (Number.isFinite(seconds) && seconds >= 0) {
-    return Math.floor(seconds * 1000);
-  }
-  const epochMs = Date.parse(raw);
-  if (Number.isFinite(epochMs)) {
-    const delta = epochMs - Date.now();
-    return delta > 0 ? delta : 0;
-  }
-  return undefined;
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.floor(ms))));
-}
-
-function normalizeCommunicationPathFormatSegment(
-  raw?: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' | 'api' | 'r4' | 'fhir.r4',
-): 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' {
-  const value = String(raw || '').trim().toLowerCase();
-  if (!value || value === 'api' || value === 'org.hl7.fhir.api') return 'org.hl7.fhir.api';
-  if (value === 'r4' || value === 'fhir.r4' || value === 'org.hl7.fhir.r4') return 'org.hl7.fhir.r4';
-  return 'org.hl7.fhir.api';
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
+import {
+  isDemoMode,
+  isRetryableTransportError,
+  normalizeBearerToken,
+  normalizeCommunicationPathFormatSegment,
+  redactSensitive,
+  sleep,
+  toDidWebFromUrlOrHost,
+  trimTrailingSlash,
+} from './client-runtime-utils.js';
 
 function maybeConvertCommunicationClaimsToFhirR4Payload(
   payload: Record<string, unknown>,
@@ -154,38 +126,12 @@ function maybeConvertCommunicationClaimsToFhirR4Payload(
   };
 }
 
-function isRetryableTransportError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error || '');
-  return /fetch failed|ECONNREFUSED|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|abort/i.test(message);
-}
-
-function isDemoMode(mode?: string): boolean {
-  return String(mode || '').toLowerCase() === 'demo';
-}
-
-function normalizeBearerToken(rawToken?: string): string | undefined {
-  if (!rawToken) return undefined;
-  const trimmed = String(rawToken).trim();
-  if (!trimmed) return undefined;
-  return trimmed.replace(/^Bearer\s+/i, '').trim() || undefined;
-}
-
 type CachedToken = {
   accessToken: string;
   tokenType: string;
   scopes: string[];
   expiresAt: number; // unix ms
 };
-
-function redactSensitive(value: unknown): Record<string, unknown> {
-  const redacted = JSON.parse(JSON.stringify(value, (key, nestedValue) => {
-    if (/token|authorization|secret|password|assertion/i.test(String(key || ''))) {
-      return '[redacted]';
-    }
-    return nestedValue;
-  }));
-  return redacted && typeof redacted === 'object' ? redacted as Record<string, unknown> : {};
-}
 
 export class DataspaceNodeClient {
   private readonly baseUrl: string;
@@ -202,6 +148,10 @@ export class DataspaceNodeClient {
   private defaultIntervalMs?: number;
   private readonly _tokenCache = new Map<string, CachedToken>();
   private readonly _demoJobs = new Map<string, { kind: string; payload: Record<string, unknown>; path: string }>();
+  private readonly paths: DataspaceNodePathBuilder;
+  private readonly httpRuntime: DataspaceNodeHttpRuntime;
+  private readonly authRuntime: DataspaceNodeAuthRuntime;
+  private readonly responseHelpers = new DataspaceNodeResponseHelpers();
 
   constructor(options: ClientOptions) {
     this.baseUrl = trimTrailingSlash(options.baseUrl);
@@ -225,6 +175,42 @@ export class DataspaceNodeClient {
     if (this.httpTraceFile) {
       mkdirSync(dirname(this.httpTraceFile), { recursive: true });
     }
+    this.paths = new DataspaceNodePathBuilder(
+      this.requireRouteContext.bind(this),
+      this.requireHostRouteContext.bind(this),
+    );
+    this.httpRuntime = new DataspaceNodeHttpRuntime({
+      baseUrl: this.baseUrl,
+      bearerToken: this.bearerToken,
+      defaultHeaders: this.defaultHeaders,
+      wallet: this.wallet,
+      requestTimeoutMs: this.requestTimeoutMs,
+      requestRetries: this.requestRetries,
+      allowDemoFallback: this.allowDemoFallback,
+      traceHttp: this.traceHttp.bind(this),
+      demoJobs: this._demoJobs,
+    });
+    this.authRuntime = new DataspaceNodeAuthRuntime({
+      baseUrl: this.baseUrl,
+      wallet: this.wallet,
+      tokenCache: this._tokenCache,
+      defaultTimeoutMs: this.defaultTimeoutMs,
+      defaultIntervalMs: this.defaultIntervalMs,
+      submitBatch: this.submitBatch.bind(this),
+      pollUntilComplete: this.pollUntilComplete.bind(this),
+      postJson: this.postJson.bind(this),
+      identityDeviceDcrPath: (ctx?: RouteContext) => this.identityDeviceDcrPath(ctx),
+      identityDeviceDcrPollPath: (ctx?: RouteContext) => this.identityDeviceDcrPollPath(ctx),
+      identityCodePath: (ctx: RouteContext) => this.identityCodePath(ctx),
+      identityCodePollPath: (ctx: RouteContext) => this.identityCodePollPath(ctx),
+      identitySmartTokenPath: (ctx: RouteContext) => this.identitySmartTokenPath(ctx),
+      identitySmartTokenPollPath: (ctx: RouteContext) => this.identitySmartTokenPollPath(ctx),
+      identityTokenExchangePath: (ctx?: RouteContext) => this.identityTokenExchangePath(ctx),
+      identityTokenExchangePollPath: (ctx?: RouteContext) => this.identityTokenExchangePollPath(ctx),
+      identityOpenIdSmartTokenPath: (ctx?: RouteContext) => this.identityOpenIdSmartTokenPath(ctx),
+      identityOpenIdSmartTokenPollPath: (ctx?: RouteContext) => this.identityOpenIdSmartTokenPollPath(ctx),
+      submitAndPoll: this.submitAndPoll.bind(this),
+    } as any);
   }
 
   private traceHttp(stage: string, data: Record<string, unknown>): void {
@@ -320,18 +306,10 @@ export class DataspaceNodeClient {
   }
 
   private resolveSimplePollOptions(timeoutSeconds?: number, intervalSeconds?: number): PollOptions | undefined {
-    const pollOptions: PollOptions = {};
-    if (Number.isFinite(Number(timeoutSeconds))) {
-      pollOptions.timeoutMs = Math.max(1, Math.floor(Number(timeoutSeconds) * 1000));
-    } else if (this.defaultTimeoutMs) {
-      pollOptions.timeoutMs = this.defaultTimeoutMs;
-    }
-    if (Number.isFinite(Number(intervalSeconds))) {
-      pollOptions.intervalMs = Math.max(1, Math.floor(Number(intervalSeconds) * 1000));
-    } else if (this.defaultIntervalMs) {
-      pollOptions.intervalMs = this.defaultIntervalMs;
-    }
-    return Object.keys(pollOptions).length ? pollOptions : undefined;
+    return resolveSimplePollOptions(timeoutSeconds, intervalSeconds, {
+      timeoutMs: this.defaultTimeoutMs,
+      intervalMs: this.defaultIntervalMs,
+    });
   }
 
   private requireRouteContext(ctx?: RouteContext): RouteContext {
@@ -355,326 +333,57 @@ export class DataspaceNodeClient {
   }
 
   // ---- Path helpers -------------------------------------------------------
-
-  /**
-   * Generic GW v1 tenant route builder.
-   * Use this for any section/format/resourceType/action combination not covered
-   * by a dedicated convenience method.
-   *
-   * Pattern: `/{tenantId}/cds-{jurisdiction}/v1/{sector}/{section}/{format}/{resourceType}/{action}`
-   *
-   * @example
-   * client.v1Path(ctx, 'individual', 'org.schema', 'Organization', '_batch')
-   * // → /acme/cds-ES/v1/health-care/individual/org.schema/Organization/_batch
-   */
-  public v1Path(
-    ctx: RouteContext | undefined,
-    section: V1Section,
-    format: string,
-    resourceType: string,
-    action: V1Action,
-  ): string {
-    const routeCtx = this.requireRouteContext(ctx);
-    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/${encode(section)}/${encode(format)}/${encode(resourceType)}/${encode(action)}`;
-  }
-
-  /**
-   * Generic tenant-scoped identity route builder.
-   * Pattern: `/{prefix}/cds-{jurisdiction}/v1/{sector}/{tenantId}/identity/auth/{action}`
-   *
-   * The `prefix` is service-specific: `host` for GW, `publisher` for DataConv, `ica` for ICA.
-   * Dedicated path methods in this SDK use `host` (GW convention).
-   */
-  public tenantIdentityPath(ctx: RouteContext | undefined, prefix: string, action: string): string {
-    const routeCtx = this.requireRouteContext(ctx);
-    return `/${encode(prefix)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/${encode(routeCtx.tenantId)}/identity/auth/${encode(action)}`;
-  }
-
-  /**
-   * Generic host registry route builder (tenant-agnostic, `host/` prefix).
-   * Use for controller-level registry operations (Organization activate, Order, etc.).
-   *
-   * Pattern: `/host/cds-{jurisdiction}/v1/{sector}/registry/org.schema/{resourceType}/{action}`
-   */
-  public hostRegistryPath(
-    ctx: HostRouteContext | undefined,
-    resourceType: string,
-    action: V1Action,
-  ): string {
-    const hostCtx = this.requireHostRouteContext(ctx);
-    return `/host/cds-${encode(hostCtx.jurisdiction)}/v1/${encode(hostCtx.sector)}/registry/org.schema/${encode(resourceType)}/${encode(action)}`;
-  }
-
-  /** Submit path: host registry Organization batch (controller-level org registration). */
-  public hostRegistryOrganizationBatchPath(ctx?: HostRouteContext): string {
-    return this.hostRegistryPath(ctx, 'Organization', '_batch');
-  }
-
-  /** Poll path: host registry Organization batch. Pair with `hostRegistryOrganizationBatchPath`. */
-  public hostRegistryOrganizationPollPath(ctx?: HostRouteContext): string {
-    return this.hostRegistryPath(ctx, 'Organization', '_batch-response');
-  }
-
-  /** Submit path: activate a tenant Organization in the GW registry using a VC from ICA. */
-  public hostRegistryOrganizationActivatePath(ctx?: HostRouteContext): string {
-    return this.hostRegistryPath(ctx, 'Organization', '_activate');
-  }
-
-  /** Poll path: `_activate` response. Pair with `hostRegistryOrganizationActivatePath`. */
-  public hostRegistryOrganizationActivatePollPath(ctx?: HostRouteContext): string {
-    return this.hostRegistryPath(ctx, 'Organization', '_activate-response');
-  }
-
-  /** Submit path: host registry Order batch (controller-level order submission). */
-  public hostRegistryOrderBatchPath(ctx?: HostRouteContext): string {
-    return this.hostRegistryPath(ctx, 'Order', '_batch');
-  }
-
-  /** Poll path: host registry Order batch. Pair with `hostRegistryOrderBatchPath`. */
-  public hostRegistryOrderPollPath(ctx?: HostRouteContext): string {
-    return this.hostRegistryPath(ctx, 'Order', '_batch-response');
-  }
-
-  /**
-   * Submit path: individual/family Organization onboarding (`org.schema/Organization/_batch`).
-   * Use for `family-registration/_create-or-resume` DIDComm payloads.
-   */
-  public individualFamilyOrganizationBatchPath(ctx?: RouteContext): string {
-    const routeCtx = this.requireRouteContext(ctx);
-    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/individual/org.schema/Organization/_batch`;
-  }
-
-  /** Poll path: individual/family Organization. Pair with `individualFamilyOrganizationBatchPath`. */
-  public individualFamilyOrganizationPollPath(ctx?: RouteContext): string {
-    const routeCtx = this.requireRouteContext(ctx);
-    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/individual/org.schema/Organization/_batch-response`;
-  }
-
-  /** Submit path: individual/family Organization search (`org.schema/Organization/_search`). */
-  public individualFamilyOrganizationSearchPath(ctx?: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.schema', 'Organization', '_search');
-  }
-
-  /** Poll path: individual/family Organization search. Pair with `individualFamilyOrganizationSearchPath`. */
-  public individualFamilyOrganizationSearchPollPath(ctx?: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.schema', 'Organization', '_search-response');
-  }
-
-  /** Submit path: individual/family Order batch (`org.schema/Order/_batch`). */
-  public individualFamilyOrderBatchPath(ctx?: RouteContext): string {
-    const routeCtx = this.requireRouteContext(ctx);
-    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/individual/org.schema/Order/_batch`;
-  }
-
-  /** Poll path: individual/family Order. Pair with `individualFamilyOrderBatchPath`. */
-  public individualFamilyOrderPollPath(ctx?: RouteContext): string {
-    const routeCtx = this.requireRouteContext(ctx);
-    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/individual/org.schema/Order/_batch-response`;
-  }
-
-  /** Submit path: individual RelatedPerson (FHIR R4 API, `org.hl7.fhir.api/RelatedPerson/_batch`). */
-  public individualRelatedPersonBatchPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/RelatedPerson/_batch`;
-  }
-
-  /** Poll path: individual RelatedPerson. Pair with `individualRelatedPersonBatchPath`. */
-  public individualRelatedPersonPollPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/RelatedPerson/_batch-response`;
-  }
-
-  /** Submit path: individual Observation (FHIR R4 API, `org.hl7.fhir.api/Observation/_batch`). */
-  public individualObservationBatchPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/Observation/_batch`;
-  }
-
-  /** Poll path: individual Observation. Pair with `individualObservationBatchPath`. */
-  public individualObservationPollPath(ctx: RouteContext): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/individual/org.hl7.fhir.api/Observation/_batch-response`;
-  }
-
-  /** Submit path: individual Communication (`{format}/Communication/_batch`). */
-  public individualCommunicationBatchPath(
-    ctx: RouteContext,
-    pathFormatSegment: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' = 'org.hl7.fhir.r4',
-  ): string {
-    return this.v1Path(ctx, 'individual', pathFormatSegment, 'Communication', '_batch');
-  }
-
-  /** Poll path: individual Communication. Pair with `individualCommunicationBatchPath`. */
-  public individualCommunicationPollPath(
-    ctx: RouteContext,
-    pathFormatSegment: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' = 'org.hl7.fhir.r4',
-  ): string {
-    return this.v1Path(ctx, 'individual', pathFormatSegment, 'Communication', '_batch-response');
-  }
-
-  /** Submit path: individual Task (FHIR R4 API, `org.hl7.fhir.api/Task/_batch`). */
-  public individualTaskBatchPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.api', 'Task', '_batch');
-  }
-
-  /** Poll path: individual Task. Pair with `individualTaskBatchPath`. */
-  public individualTaskPollPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.api', 'Task', '_batch-response');
-  }
-
-  /** Submit path: entity Employee (`entity/org.schema/Employee/_batch`). */
-  public employeeBatchPath(ctx?: RouteContext): string {
-    return this.v1Path(ctx, 'entity', 'org.schema', 'Employee', '_batch');
-  }
-
-  /** Poll path: entity Employee. Pair with `employeeBatchPath`. */
-  public employeePollPath(ctx?: RouteContext): string {
-    return this.v1Path(ctx, 'entity', 'org.schema', 'Employee', '_batch-response');
-  }
-
-  /** Submit path: individual Person legacy format (`individual/org.schema/Person/_batch`). Use for older flows; prefer Organization for family onboarding. */
-  public individualLegacyPersonBatchPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.schema', 'Person', '_batch');
-  }
-
-  /** Submit path: individual Consent (FHIR R4, `org.hl7.fhir.r4/Consent/_batch`). */
-  public individualConsentR4BatchPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Consent', '_batch');
-  }
-
-  /** Poll path: individual Consent R4. Pair with `individualConsentR4BatchPath`. */
-  public individualConsentR4PollPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Consent', '_batch-response');
-  }
-
-  /** Submit path: individual Composition (FHIR R4, `org.hl7.fhir.r4/Composition/_batch`). */
-  public individualCompositionR4BatchPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Composition', '_batch');
-  }
-
-  /** Poll path: individual Composition R4. Pair with `individualCompositionR4BatchPath`. */
-  public individualCompositionR4PollPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.r4', 'Composition', '_batch-response');
-  }
-
-  /** Submit path: digital twin Composition (FHIR API format, `digitaltwin/org.hl7.fhir.api/Composition/_batch`). */
-  public digitalTwinCompositionApiBatchPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.api', 'Composition', '_batch');
-  }
-
-  /** Poll path: digital twin Composition API. Pair with `digitalTwinCompositionApiBatchPath`. */
-  public digitalTwinCompositionApiPollPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.api', 'Composition', '_batch-response');
-  }
-
-  /** Submit path: digital twin Composition (FHIR R4 format, `digitaltwin/org.hl7.fhir.r4/Composition/_batch`). */
-  public digitalTwinCompositionR4BatchPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.r4', 'Composition', '_batch');
-  }
-
-  /** Poll path: digital twin Composition R4. Pair with `digitalTwinCompositionR4BatchPath`. */
-  public digitalTwinCompositionR4PollPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'digitaltwin', 'org.hl7.fhir.r4', 'Composition', '_batch-response');
-  }
-
-  /**
-   * Submit path: identity DCR step — binds API key to service public JWK.
-   * Used internally by `authenticateBackendPkceAndExchange` (step 1 of identity-exchange.v1).
-   */
-  public identityDeviceDcrPath(ctx?: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_dcr');
-  }
-
-  /** Poll path: identity DCR. Pair with `identityDeviceDcrPath`. */
-  public identityDeviceDcrPollPath(ctx?: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_dcr-response');
-  }
-
-  /**
-   * Submit path: identity token exchange — id_token → SMART bearer.
-   * Used internally by `authenticateBackendPkceAndExchange` (step 4 of identity-exchange.v1).
-   */
-  public identityTokenExchangePath(ctx?: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_exchange');
-  }
-
-  /** Poll path: identity token exchange. Pair with `identityTokenExchangePath`. */
-  public identityTokenExchangePollPath(ctx?: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_exchange-response');
-  }
-
-  /** Submit path: SMART OpenID token request (`identity/openid/smart/token`). */
-  public identityOpenIdSmartTokenPath(ctx?: RouteContext): string {
-    const routeCtx = this.requireRouteContext(ctx);
-    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/identity/openid/smart/token`;
-  }
-
-  /** Poll path: SMART OpenID token request. Pair with `identityOpenIdSmartTokenPath`. */
-  public identityOpenIdSmartTokenPollPath(ctx?: RouteContext): string {
-    const routeCtx = this.requireRouteContext(ctx);
-    return `/${encode(routeCtx.tenantId)}/cds-${encode(routeCtx.jurisdiction)}/v1/${encode(routeCtx.sector)}/identity/openid/smart/_batch-response`;
-  }
-
-  /** Submit path: identity license issue (`identity/auth/_issue`). */
-  public identityLicenseIssuePath(ctx?: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_issue');
-  }
-
-  /**
-   * Submit path: SMART token step — code + code_verifier → id_token.
-   * Used internally by `authenticateBackendPkceAndExchange` (step 3 of identity-exchange.v1).
-   */
-  public identitySmartTokenPath(ctx: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_token');
-  }
-
-  /** Poll path: SMART token. Pair with `identitySmartTokenPath`. */
-  public identitySmartTokenPollPath(ctx: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_token-response');
-  }
-
-  /** Submit path: Firebase custom token exchange (end-user device flow, NOT B2B). */
-  public identityFirebaseCustomPath(ctx: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_custom');
-  }
-
-  /** Poll path: Firebase custom token. Pair with `identityFirebaseCustomPath`. */
-  public identityFirebaseCustomPollPath(ctx: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_custom-response');
-  }
-
-  /**
-   * Submit path: identity PKCE code step — sends S256 code_challenge.
-   * Used internally by `authenticateBackendPkceAndExchange` (step 2 of identity-exchange.v1).
-   */
-  public identityCodePath(ctx: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_code');
-  }
-
-  /** Poll path: identity PKCE code. Pair with `identityCodePath`. */
-  public identityCodePollPath(ctx: RouteContext): string {
-    return this.tenantIdentityPath(ctx, 'host', '_code-response');
-  }
-
-  /** Submit path: UHC debug task call-start (`individual/{format}/Task/_call-start`). For telephony integration testing. */
-  public taskDebugCallStartPath(ctx: RouteContext, format = 'org.hl7.fhir.api'): string {
-    return this.v1Path(ctx, 'individual', format, 'Task', '_call-start');
-  }
-
-  /** Path: UHC debug task logs (`individual/{format}/Task/_logs`). Retrieve async task execution logs. */
-  public taskDebugLogsPath(ctx: RouteContext, format = 'org.hl7.fhir.api'): string {
-    return this.v1Path(ctx, 'individual', format, 'Task', '_logs');
-  }
-
-  /**
-   * Submit path: DataConversion file upload.
-   * Pattern: `/{tenantId}/cds-{jurisdiction}/v1/{sector}/conversion/{softwareId}/{sourceFormat}/_upload`
-   * Use with `uploadConversionFile` to send a file (e.g. XLSX) for async processing.
-   */
-  public conversionUploadPath(ctx: RouteContext, softwareId: string, sourceFormat: string): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/conversion/${encode(softwareId)}/${encode(sourceFormat)}/_upload`;
-  }
-
-  /** Poll path: DataConversion upload. Pair with `conversionUploadPath`. */
-  public conversionUploadPollPath(ctx: RouteContext, softwareId: string, sourceFormat: string): string {
-    return `/${encode(ctx.tenantId)}/cds-${encode(ctx.jurisdiction)}/v1/${encode(ctx.sector)}/conversion/${encode(softwareId)}/${encode(sourceFormat)}/_upload-response`;
-  }
+  public v1Path(ctx: RouteContext | undefined, section: V1Section, format: string, resourceType: string, action: V1Action): string { return this.paths.v1Path(ctx, section, format, resourceType, action); }
+  public tenantIdentityPath(ctx: RouteContext | undefined, prefix: string, action: string): string { return this.paths.tenantIdentityPath(ctx, prefix, action); }
+  public hostRegistryPath(ctx: HostRouteContext | undefined, resourceType: string, action: V1Action): string { return this.paths.hostRegistryPath(ctx, resourceType, action); }
+  public hostRegistryOrganizationBatchPath(ctx?: HostRouteContext): string { return this.paths.hostRegistryOrganizationBatchPath(ctx); }
+  public hostRegistryOrganizationPollPath(ctx?: HostRouteContext): string { return this.paths.hostRegistryOrganizationPollPath(ctx); }
+  public hostRegistryOrganizationActivatePath(ctx?: HostRouteContext): string { return this.paths.hostRegistryOrganizationActivatePath(ctx); }
+  public hostRegistryOrganizationActivatePollPath(ctx?: HostRouteContext): string { return this.paths.hostRegistryOrganizationActivatePollPath(ctx); }
+  public hostRegistryOrderBatchPath(ctx?: HostRouteContext): string { return this.paths.hostRegistryOrderBatchPath(ctx); }
+  public hostRegistryOrderPollPath(ctx?: HostRouteContext): string { return this.paths.hostRegistryOrderPollPath(ctx); }
+  public individualFamilyOrganizationBatchPath(ctx?: RouteContext): string { return this.paths.individualFamilyOrganizationBatchPath(ctx); }
+  public individualFamilyOrganizationPollPath(ctx?: RouteContext): string { return this.paths.individualFamilyOrganizationPollPath(ctx); }
+  public individualFamilyOrganizationSearchPath(ctx?: RouteContext): string { return this.paths.individualFamilyOrganizationSearchPath(ctx); }
+  public individualFamilyOrganizationSearchPollPath(ctx?: RouteContext): string { return this.paths.individualFamilyOrganizationSearchPollPath(ctx); }
+  public individualFamilyOrderBatchPath(ctx?: RouteContext): string { return this.paths.individualFamilyOrderBatchPath(ctx); }
+  public individualFamilyOrderPollPath(ctx?: RouteContext): string { return this.paths.individualFamilyOrderPollPath(ctx); }
+  public individualRelatedPersonBatchPath(ctx: RouteContext): string { return this.paths.individualRelatedPersonBatchPath(ctx); }
+  public individualRelatedPersonPollPath(ctx: RouteContext): string { return this.paths.individualRelatedPersonPollPath(ctx); }
+  public individualObservationBatchPath(ctx: RouteContext): string { return this.paths.individualObservationBatchPath(ctx); }
+  public individualObservationPollPath(ctx: RouteContext): string { return this.paths.individualObservationPollPath(ctx); }
+  public individualCommunicationBatchPath(ctx: RouteContext, pathFormatSegment: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' = 'org.hl7.fhir.r4'): string { return this.paths.individualCommunicationBatchPath(ctx, pathFormatSegment); }
+  public individualCommunicationPollPath(ctx: RouteContext, pathFormatSegment: 'org.hl7.fhir.api' | 'org.hl7.fhir.r4' = 'org.hl7.fhir.r4'): string { return this.paths.individualCommunicationPollPath(ctx, pathFormatSegment); }
+  public individualTaskBatchPath(ctx: RouteContext): string { return this.paths.individualTaskBatchPath(ctx); }
+  public individualTaskPollPath(ctx: RouteContext): string { return this.paths.individualTaskPollPath(ctx); }
+  public employeeBatchPath(ctx?: RouteContext): string { return this.paths.employeeBatchPath(ctx); }
+  public employeePollPath(ctx?: RouteContext): string { return this.paths.employeePollPath(ctx); }
+  public individualLegacyPersonBatchPath(ctx: RouteContext): string { return this.paths.individualLegacyPersonBatchPath(ctx); }
+  public individualConsentR4BatchPath(ctx: RouteContext): string { return this.paths.individualConsentR4BatchPath(ctx); }
+  public individualConsentR4PollPath(ctx: RouteContext): string { return this.paths.individualConsentR4PollPath(ctx); }
+  public individualCompositionR4BatchPath(ctx: RouteContext): string { return this.paths.individualCompositionR4BatchPath(ctx); }
+  public individualCompositionR4PollPath(ctx: RouteContext): string { return this.paths.individualCompositionR4PollPath(ctx); }
+  public digitalTwinCompositionApiBatchPath(ctx: RouteContext): string { return this.paths.digitalTwinCompositionApiBatchPath(ctx); }
+  public digitalTwinCompositionApiPollPath(ctx: RouteContext): string { return this.paths.digitalTwinCompositionApiPollPath(ctx); }
+  public digitalTwinCompositionR4BatchPath(ctx: RouteContext): string { return this.paths.digitalTwinCompositionR4BatchPath(ctx); }
+  public digitalTwinCompositionR4PollPath(ctx: RouteContext): string { return this.paths.digitalTwinCompositionR4PollPath(ctx); }
+  public identityDeviceDcrPath(ctx?: RouteContext): string { return this.paths.identityDeviceDcrPath(ctx); }
+  public identityDeviceDcrPollPath(ctx?: RouteContext): string { return this.paths.identityDeviceDcrPollPath(ctx); }
+  public identityTokenExchangePath(ctx?: RouteContext): string { return this.paths.identityTokenExchangePath(ctx); }
+  public identityTokenExchangePollPath(ctx?: RouteContext): string { return this.paths.identityTokenExchangePollPath(ctx); }
+  public identityOpenIdSmartTokenPath(ctx?: RouteContext): string { return this.paths.identityOpenIdSmartTokenPath(ctx); }
+  public identityOpenIdSmartTokenPollPath(ctx?: RouteContext): string { return this.paths.identityOpenIdSmartTokenPollPath(ctx); }
+  public identityLicenseIssuePath(ctx?: RouteContext): string { return this.paths.identityLicenseIssuePath(ctx); }
+  public identitySmartTokenPath(ctx: RouteContext): string { return this.paths.identitySmartTokenPath(ctx); }
+  public identitySmartTokenPollPath(ctx: RouteContext): string { return this.paths.identitySmartTokenPollPath(ctx); }
+  public identityFirebaseCustomPath(ctx: RouteContext): string { return this.paths.identityFirebaseCustomPath(ctx); }
+  public identityFirebaseCustomPollPath(ctx: RouteContext): string { return this.paths.identityFirebaseCustomPollPath(ctx); }
+  public identityCodePath(ctx: RouteContext): string { return this.paths.identityCodePath(ctx); }
+  public identityCodePollPath(ctx: RouteContext): string { return this.paths.identityCodePollPath(ctx); }
+  public taskDebugCallStartPath(ctx: RouteContext, format = 'org.hl7.fhir.api'): string { return this.paths.taskDebugCallStartPath(ctx, format); }
+  public taskDebugLogsPath(ctx: RouteContext, format = 'org.hl7.fhir.api'): string { return this.paths.taskDebugLogsPath(ctx, format); }
+  public conversionUploadPath(ctx: RouteContext, softwareId: string, sourceFormat: string): string { return this.paths.conversionUploadPath(ctx, softwareId, sourceFormat); }
+  public conversionUploadPollPath(ctx: RouteContext, softwareId: string, sourceFormat: string): string { return this.paths.conversionUploadPollPath(ctx, softwareId, sourceFormat); }
 
   // ---- Backend PKCE auth (identity-exchange.v1) -------------------------
 
@@ -688,118 +397,7 @@ export class DataspaceNodeClient {
   public async authenticateBackendPkceAndExchange(
     options: BackendPkceAuthOptions,
   ): Promise<BackendPkceAuthResult> {
-    const {
-      ctx,
-      apiKey,
-      scopes,
-      tokenCacheKey = `pkce:${apiKey.slice(0, 8)}`,
-      endpointId,
-      codeVerifier = randomUUID(),
-      pollOptions,
-    } = options;
-
-    const cacheKey = String(tokenCacheKey || endpointId || '').trim() || `pkce:${apiKey.slice(0, 8)}`;
-    const cached = this._tokenCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now() + 30_000) {
-      return { status: 'cached', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: cached.accessToken, tokenType: cached.tokenType, scopes: cached.scopes };
-    }
-
-    const controllerPublicJwk = await this.resolveControllerPublicJwk(options);
-
-    // Step 1: DCR – bind API key to service public key
-    const dcrPayload = this._buildAuthDIDCommRequest({
-      thid: `dcr-${randomUUID()}`,
-      clientId: apiKey,
-      body: {},
-      controllerPublicJwk,
-    });
-    await this.submitBatch(this.identityDeviceDcrPath(ctx), dcrPayload);
-    const dcrPoll = await this.pollUntilComplete(
-      this.identityDeviceDcrPollPath(ctx),
-      { thid: String(dcrPayload['thid']) },
-      pollOptions,
-    );
-    if (dcrPoll.status !== 200) {
-      return { status: 'failed', step: '_dcr', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: '', tokenType: 'Bearer', scopes };
-    }
-
-    // Step 2: Code – PKCE S256 challenge
-    const codeChallenge = this._pkceS256Challenge(codeVerifier);
-    const codePayload = this._buildAuthDIDCommRequest({
-      thid: `code-${randomUUID()}`,
-      clientId: apiKey,
-      body: {},
-      controllerPublicJwk,
-      extra: { code_challenge: codeChallenge, code_challenge_method: 'S256' },
-    });
-    await this.submitBatch(this.identityCodePath(ctx), codePayload);
-    const codePoll = await this.pollUntilComplete(
-      this.identityCodePollPath(ctx),
-      { thid: String(codePayload['thid']) },
-      pollOptions,
-    );
-    const codeBody = (codePoll.body as Record<string, unknown>) ?? {};
-    const code = String(codeBody['code'] ?? '').trim();
-    if (codePoll.status !== 200 || !code) {
-      return { status: 'failed', step: '_code', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: '', tokenType: 'Bearer', scopes };
-    }
-
-    // Step 3: Token – exchange code + verifier for id_token
-    const tokenPayload = this._buildAuthDIDCommRequest({
-      thid: `token-${randomUUID()}`,
-      clientId: apiKey,
-      body: {},
-      controllerPublicJwk,
-      extra: { code, code_verifier: codeVerifier },
-    });
-    await this.submitBatch(this.identitySmartTokenPath(ctx), tokenPayload);
-    const tokenPoll = await this.pollUntilComplete(
-      this.identitySmartTokenPollPath(ctx),
-      { thid: String(tokenPayload['thid']) },
-      pollOptions,
-    );
-    const tokenBody = (tokenPoll.body as Record<string, unknown>) ?? {};
-    const idToken = String(tokenBody['id_token'] ?? '').trim();
-    if (tokenPoll.status !== 200 || !idToken) {
-      return { status: 'failed', step: '_token', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: '', tokenType: 'Bearer', scopes };
-    }
-
-    // Step 4: Exchange – id_token → SMART bearer
-    const exchangeThid = `exchange-${randomUUID()}`;
-    const exchangePayload: Record<string, unknown> = {
-      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-      subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-      subject_token: idToken,
-      scope: scopes.join(' '),
-      api_key: apiKey,
-      organization: ctx.tenantId,
-      thid: exchangeThid,
-    };
-    await this.submitBatch(this.identityTokenExchangePath(ctx), exchangePayload);
-    const exchangePoll = await this.pollUntilComplete(
-      this.identityTokenExchangePollPath(ctx),
-      { thid: exchangeThid },
-      pollOptions,
-    );
-    const exchangeBody = (exchangePoll.body as Record<string, unknown>) ?? {};
-    const accessToken = String(exchangeBody['access_token'] ?? '').trim();
-    if (exchangePoll.status !== 200 || !accessToken) {
-      return { status: 'failed', step: '_exchange', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken: '', tokenType: 'Bearer', scopes };
-    }
-
-    const tokenType = String(exchangeBody['token_type'] ?? 'Bearer');
-    const grantedScope = String(exchangeBody['scope'] ?? '').trim();
-    const grantedScopes = grantedScope ? grantedScope.split(' ').filter(Boolean) : scopes;
-    const expiresIn = Number(exchangeBody['expires_in'] ?? 0);
-
-    this._tokenCache.set(cacheKey, {
-      accessToken,
-      tokenType,
-      scopes: grantedScopes,
-      expiresAt: Date.now() + expiresIn * 1000,
-    });
-
-    return { status: 'fetched', tokenCacheKey: cacheKey, endpointId: cacheKey, accessToken, tokenType, scopes: grantedScopes };
+    return this.authRuntime.authenticateBackendPkceAndExchange(options);
   }
 
   /**
@@ -807,11 +405,7 @@ export class DataspaceNodeClient {
    * Returns `undefined` if not cached or expired.
    */
   public getCachedBearerToken(tokenCacheKey: string): string | undefined {
-    const cached = this._tokenCache.get(tokenCacheKey);
-    if (cached && cached.expiresAt > Date.now() + 30_000) {
-      return cached.accessToken;
-    }
-    return undefined;
+    return this.authRuntime.getCachedBearerToken(tokenCacheKey);
   }
 
   /**
@@ -820,146 +414,14 @@ export class DataspaceNodeClient {
   public async authenticateBackendSmartStandard(
     options: BackendSmartAuthOptions,
   ): Promise<BackendSmartAuthResult> {
-    const {
-      clientId,
-      scopes,
-      tokenCacheKey = `smart-backend:${clientId}`,
-      endpointId,
-      tokenUrl,
-      tokenPath = '/token',
-      audience,
-      assertionTtlSeconds = 300,
-      additionalTokenFields,
-    } = options;
-
-    const cacheKey = String(tokenCacheKey || endpointId || '').trim() || `smart-backend:${clientId}`;
-    const cached = this._tokenCache.get(cacheKey);
-    if (cached && cached.expiresAt > Date.now() + 30_000) {
-      return {
-        status: 'cached',
-        profile: 'smart-backend.v1',
-        tokenCacheKey: cacheKey,
-        endpointId: cacheKey,
-        accessToken: cached.accessToken,
-        tokenType: cached.tokenType,
-        scopes: cached.scopes,
-        expiresAt: new Date(cached.expiresAt).toISOString(),
-      };
-    }
-
-    const resolvedTokenUrl = this.resolveStandardTokenUrl(tokenUrl, tokenPath);
-    const publicJwk = await this.resolveSmartAuthPublicJwk(options);
-    const clientAssertion = await this.signSmartBackendClientAssertion({
-      clientId,
-      audience: audience ?? resolvedTokenUrl,
-      publicJwk,
-      ttlSeconds: assertionTtlSeconds,
-      walletContext: options.walletContext,
-    });
-
-    const tokenRequest: Record<string, string> = {
-      grant_type: 'client_credentials',
-      client_id: clientId,
-      scope: scopes.join(' '),
-      client_assertion_type: 'urn:ietf:params:oauth:client-assertion-type:jwt-bearer',
-      client_assertion: clientAssertion,
-      ...(additionalTokenFields ?? {}),
-    };
-    const response = await this.postJson(tokenUrl ?? tokenPath, tokenRequest);
-    const body = (response.body as Record<string, unknown>) ?? {};
-    const accessToken = String(body.access_token ?? '').trim();
-
-    if (response.status >= 400 || !accessToken) {
-      return {
-        status: 'failed',
-        profile: 'smart-backend.v1',
-        tokenCacheKey: cacheKey,
-        endpointId: cacheKey,
-        statusCode: response.status,
-        response,
-      };
-    }
-
-    const tokenType = String(body.token_type ?? 'Bearer');
-    const grantedScope = String(body.scope ?? '').trim();
-    const grantedScopes = grantedScope ? grantedScope.split(' ').filter(Boolean) : scopes;
-    const expiresIn = Number(body.expires_in ?? 0);
-    const expiresAt = Date.now() + expiresIn * 1000;
-
-    this._tokenCache.set(cacheKey, {
-      accessToken,
-      tokenType,
-      scopes: grantedScopes,
-      expiresAt,
-    });
-
-    return {
-      status: 'fetched',
-      profile: 'smart-backend.v1',
-      tokenCacheKey: cacheKey,
-      endpointId: cacheKey,
-      statusCode: response.status,
-      accessToken,
-      tokenType,
-      scopes: grantedScopes,
-      expiresAt: new Date(expiresAt).toISOString(),
-      response,
-    };
+    return this.authRuntime.authenticateBackendSmartStandard(options);
   }
 
   /**
    * Exchange token payload against gateway token endpoint and cache the result.
    */
   public async requestSmartToken(input: SmartTokenExchangeInput): Promise<SmartTokenExchangeResult> {
-    const tokenCacheKey = String(input.tokenCacheKey || input.endpointId || '').trim();
-    if (!tokenCacheKey) {
-      throw new Error('requestSmartToken requires tokenCacheKey.');
-    }
-
-    const normalizedScopes = Array.from(new Set((input.scopes || []).filter(Boolean))).sort();
-    const cached = this._tokenCache.get(tokenCacheKey);
-    if (cached && cached.expiresAt > Date.now() + 30_000) {
-      return {
-        status: 'cached',
-        accessToken: cached.accessToken,
-        tokenType: cached.tokenType,
-        scopes: cached.scopes,
-      };
-    }
-
-    const response = await this.postJson(input.path || '/token', input.exchangePayload || {});
-    const body = (response.body as Record<string, unknown>) ?? {};
-    const accessToken = String(body.access_token ?? '').trim();
-
-    if (response.status >= 400 || !accessToken) {
-      return {
-        status: 'failed',
-        statusCode: response.status,
-        response,
-      };
-    }
-
-    const tokenType = String(body.token_type ?? 'Bearer');
-    const grantedScopes = Array.isArray(body.granted_scopes)
-      ? (body.granted_scopes as string[])
-      : String(body.scope ?? '').trim().split(' ').filter(Boolean);
-    const resolvedScopes = grantedScopes.length ? grantedScopes : normalizedScopes;
-    const expiresIn = Number(body.expires_in ?? 0);
-    this._tokenCache.set(tokenCacheKey, {
-      accessToken,
-      tokenType,
-      scopes: resolvedScopes,
-      expiresAt: Date.now() + expiresIn * 1000,
-    });
-
-    return {
-      status: 'fetched',
-      accessToken,
-      tokenType,
-      scopes: resolvedScopes,
-      statusCode: response.status,
-      response,
-    };
+    return this.authRuntime.requestSmartToken(input);
   }
 
   /**
@@ -974,268 +436,7 @@ export class DataspaceNodeClient {
         ? { tenantId: input.tenantId, jurisdiction: input.jurisdiction, sector: input.sector }
         : undefined,
     );
-    const normalizedScopes = Array.from(new Set((input.scopes || []).filter(Boolean))).sort();
-    const tokenCacheKey = String(input.tokenCacheKey || input.endpointId || `smart:${routeCtx.tenantId}:${normalizedScopes.join(',')}`).trim();
-    if (!tokenCacheKey) {
-      throw new Error('requestSmartTokenSimple requires tokenCacheKey (or non-empty scopes).');
-    }
-    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
-
-    if (input.smartTokenKind === 'openid-smart') {
-      const smartPayload: Record<string, unknown> = {
-        thid: `smart-${randomUUID()}`,
-        iss: input.issuer || input.clientId || routeCtx.tenantId,
-        aud: input.audience || routeCtx.tenantId,
-        body: {
-          client_id: input.clientId || input.subjectDid || routeCtx.tenantId,
-          redirect_uri: input.redirectUri || `${this.baseUrl}/callback`,
-          code_challenge: input.codeChallenge || 'demo-code-challenge',
-          code_challenge_method: input.codeChallengeMethod || 'S256',
-          acr_values: input.acrValues || 'urn:antifraud:acr:openid4vp:employee',
-          vp_token: input.vpToken || input.idToken,
-          presentation_submission: input.presentationSubmission,
-          expires_in: 300,
-          token_type: 'Bearer',
-          sub: input.subjectDid || input.issuer || input.clientId || routeCtx.tenantId,
-          purpose: input.purpose || 'TREAT',
-          scope: normalizedScopes.join(' '),
-          ...(input.requestBodyClaims || {}),
-        },
-        ...(input.additionalClaims || {}),
-      };
-
-      const exchange = await this.submitAndPoll(
-        this.identityOpenIdSmartTokenPath(routeCtx),
-        this.identityOpenIdSmartTokenPollPath(routeCtx),
-        smartPayload,
-        pollOptions,
-      );
-
-      const exchangeBody = (exchange.poll.body as Record<string, unknown>) ?? {};
-      const accessToken = String(exchangeBody.access_token || '').trim();
-      if (exchange.poll.status >= 400 || !accessToken) {
-        return {
-          status: 'failed',
-          statusCode: exchange.poll.status,
-          response: exchange.poll.body,
-        };
-      }
-
-      const tokenType = String(exchangeBody.token_type || 'Bearer');
-      const grantedScopes = String(exchangeBody.scope || '').trim().split(' ').filter(Boolean);
-      const resolvedScopes = grantedScopes.length ? grantedScopes : normalizedScopes;
-      const expiresIn = Number(exchangeBody.expires_in ?? 0);
-      this._tokenCache.set(tokenCacheKey, {
-        accessToken,
-        tokenType,
-        scopes: resolvedScopes,
-        expiresAt: Date.now() + expiresIn * 1000,
-      });
-
-      return {
-        status: 'fetched',
-        accessToken,
-        tokenType,
-        scopes: resolvedScopes,
-        statusCode: exchange.poll.status,
-        response: exchange.poll.body,
-      };
-    }
-
-    const payload: Record<string, unknown> = {
-      thid: `exchange-${randomUUID()}`,
-      grant_type: 'urn:ietf:params:oauth:grant-type:token-exchange',
-      subject_token_type: 'urn:ietf:params:oauth:token-type:id_token',
-      subject_token: input.idToken,
-      scope: normalizedScopes.join(' '),
-      organization: routeCtx.tenantId,
-      ...(input.additionalClaims || {}),
-    };
-
-    const exchange = await this.submitAndPoll(
-      this.identityTokenExchangePath(routeCtx),
-      this.identityTokenExchangePollPath(routeCtx),
-      payload,
-      pollOptions,
-    );
-
-    const exchangeBody = (exchange.poll.body as Record<string, unknown>) ?? {};
-    const accessToken = String(exchangeBody.access_token || '').trim();
-    if (exchange.poll.status >= 400 || !accessToken) {
-      return {
-        status: 'failed',
-        statusCode: exchange.poll.status,
-        response: exchange.poll.body,
-      };
-    }
-
-    const tokenType = String(exchangeBody.token_type || 'Bearer');
-    const grantedScopes = String(exchangeBody.scope || '').trim().split(' ').filter(Boolean);
-    const resolvedScopes = grantedScopes.length ? grantedScopes : normalizedScopes;
-    const expiresIn = Number(exchangeBody.expires_in ?? 0);
-    this._tokenCache.set(tokenCacheKey, {
-      accessToken,
-      tokenType,
-      scopes: resolvedScopes,
-      expiresAt: Date.now() + expiresIn * 1000,
-    });
-
-    return {
-      status: 'fetched',
-      accessToken,
-      tokenType,
-      scopes: resolvedScopes,
-      statusCode: exchange.poll.status,
-      response: exchange.poll.body,
-    };
-  }
-
-  // ---- Private auth helpers ----------------------------------------------
-
-  private _pkceS256Challenge(verifier: string): string {
-    return createHash('sha256').update(verifier).digest().toString('base64url');
-  }
-
-  private _buildAuthDIDCommRequest(params: {
-    thid: string;
-    clientId: string;
-    body: Record<string, unknown>;
-    controllerPublicJwk: PublicJwk | Record<string, unknown>;
-    extra?: Record<string, unknown>;
-  }): Record<string, unknown> {
-    const now = Math.floor(Date.now() / 1000);
-    return {
-      thid: params.thid,
-      type: 'application/bundle-api+json',
-      iat: now,
-      exp: now + 300,
-      client_id: params.clientId,
-      body: params.body,
-      meta: {
-        jws: {
-          protected: {
-            alg: 'ES384',
-            jwk: params.controllerPublicJwk,
-          },
-        },
-      },
-      ...(params.extra ?? {}),
-    };
-  }
-
-  private async resolveControllerPublicJwk(
-    options: BackendPkceAuthOptions,
-  ): Promise<PublicJwk | Record<string, unknown>> {
-    if (options.controllerPublicJwk) {
-      return options.controllerPublicJwk;
-    }
-
-    if (!this.wallet) {
-      throw new Error('authenticateBackendPkceAndExchange requires controllerPublicJwk or a configured wallet provider.');
-    }
-
-    const walletContext: WalletContext = options.walletContext ?? {
-      tenantId: options.ctx.tenantId,
-      jurisdiction: options.ctx.jurisdiction,
-      sector: options.ctx.sector,
-    };
-    const publicJwks = await this.wallet.getPublicJwks(walletContext);
-    const controllerPublicJwk = publicJwks.find((jwk) => jwk.use === 'sig' || jwk.alg === 'ES384') ?? publicJwks[0];
-
-    if (!controllerPublicJwk) {
-      throw new Error('Wallet provider returned no public JWKs for the requested context.');
-    }
-
-    return controllerPublicJwk;
-  }
-
-  private resolveStandardTokenUrl(tokenUrl: string | undefined, tokenPath: string): string {
-    if (tokenUrl && tokenUrl.trim()) {
-      return tokenUrl.trim();
-    }
-    return `${this.baseUrl}${tokenPath.startsWith('/') ? tokenPath : `/${tokenPath}`}`;
-  }
-
-  private async resolveSmartAuthPublicJwk(
-    options: BackendSmartAuthOptions,
-  ): Promise<PublicJwk | Record<string, unknown>> {
-    if (options.publicJwk) {
-      return options.publicJwk;
-    }
-
-    if (!this.wallet) {
-      throw new Error('authenticateBackendSmartStandard requires publicJwk or a configured wallet provider.');
-    }
-
-    const walletContext: WalletContext = options.walletContext ?? {
-      tenantId: options.clientId,
-      jurisdiction: 'global',
-      sector: 'backend',
-    };
-    const publicJwks = await this.wallet.getPublicJwks(walletContext);
-    const signingJwk = publicJwks.find((jwk) => jwk.use === 'sig' || jwk.alg === 'ES384') ?? publicJwks[0];
-
-    if (!signingJwk) {
-      throw new Error('Wallet provider returned no public JWKs for smart-backend.v1.');
-    }
-
-    return signingJwk;
-  }
-
-  private async signSmartBackendClientAssertion(params: {
-    clientId: string;
-    audience: string;
-    publicJwk: PublicJwk | Record<string, unknown>;
-    ttlSeconds: number;
-    walletContext?: WalletContext;
-  }): Promise<string> {
-    if (!this.wallet) {
-      throw new Error('smart-backend.v1 signing requires a configured wallet provider.');
-    }
-
-    const now = Math.floor(Date.now() / 1000);
-    const walletContext: WalletContext = params.walletContext ?? {
-      tenantId: params.clientId,
-      jurisdiction: 'global',
-      sector: 'backend',
-    };
-    const kid = String((params.publicJwk as { kid?: string }).kid ?? '').trim();
-
-    return this.wallet.signCompactJws(walletContext, {
-      header: {
-        typ: 'JWT',
-        alg: this.preferredJwtAlg(params.publicJwk),
-        ...(kid ? { kid } : {}),
-      },
-      claims: {
-        iss: params.clientId,
-        sub: params.clientId,
-        aud: params.audience,
-        iat: now,
-        exp: now + Math.max(params.ttlSeconds, 1),
-        jti: `jwt-${randomUUID()}`,
-      },
-    });
-  }
-
-  private preferredJwtAlg(publicJwk: PublicJwk | Record<string, unknown>): string {
-    const jwk = publicJwk as Record<string, unknown>;
-    const alg = String(jwk.alg ?? '').trim();
-    if (alg) {
-      return alg;
-    }
-    const kty = String(jwk.kty ?? '').toUpperCase();
-    const crv = String(jwk.crv ?? '').toUpperCase();
-    if (kty === 'EC' && crv === 'P-256') {
-      return 'ES256';
-    }
-    if (kty === 'EC' && crv === 'P-384') {
-      return 'ES384';
-    }
-    if (kty === 'RSA') {
-      return 'RS384';
-    }
-    return 'ES384';
+    return this.authRuntime.requestSmartTokenSimple(input, routeCtx);
   }
 
   // ---- Generic batch API --------------------------------------------------
@@ -1256,14 +457,13 @@ export class DataspaceNodeClient {
       walletContext?: WalletContext;
     },
   ): Promise<SubmitResponse> {
-    const mode = options?.mode ?? 'plain';
-    if (mode === 'strict') {
-      if (!options?.recipientEncryptionJwk || !options?.walletContext) {
-        throw new Error('submitBundle strict mode requires recipientEncryptionJwk and walletContext.');
-      }
-      return this.submitBatchEncrypted(path, payload, options.recipientEncryptionJwk, options.walletContext);
-    }
-    return this.submitBatch(path, payload);
+    return this.httpRuntime.submitBundle(
+      path,
+      payload,
+      this.submitBatch.bind(this),
+      this.submitBatchEncrypted.bind(this),
+      options,
+    );
   }
 
   /**
@@ -1276,18 +476,7 @@ export class DataspaceNodeClient {
    * Returns immediately with the HTTP response — pair with `pollUntilComplete` or use `submitAndPoll`.
    */
   public async submitBatch(path: string, payload: unknown): Promise<SubmitResponse> {
-    const url = /^https?:\/\//.test(path)
-      ? path
-      : `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
-    const result = await submitDidcomm({
-      mode: 'plain',
-      url,
-      payload: payload as Record<string, unknown>,
-      defaultHeaders: this.defaultHeaders,
-      bearerToken: this.bearerToken,
-      fetcher: (requestUrl: string, init: DidcommFetchInit) => this.fetchWithPolicy(requestUrl, init, payload),
-    });
-    return { status: result.status, location: result.location, body: result.body };
+    return this.httpRuntime.submitBatch(path, payload);
   }
 
   /**
@@ -1305,41 +494,7 @@ export class DataspaceNodeClient {
     recipientEncryptionJwk: PublicJwk,
     walletContext: WalletContext,
   ): Promise<SubmitResponse> {
-    if (!this.wallet) {
-      throw new Error('submitBatchEncrypted requires a configured wallet provider.');
-    }
-
-    const publicJwks = await this.wallet.getPublicJwks(walletContext);
-    const signingJwk = publicJwks.find((jwk) => jwk.use === 'sig' || jwk.alg === 'ES384') ?? publicJwks[0];
-
-    const url = /^https?:\/\//.test(path)
-      ? path
-      : `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
-    const result = await submitDidcomm({
-      mode: 'strict',
-      url,
-      payload,
-      defaultHeaders: this.defaultHeaders,
-      bearerToken: this.bearerToken,
-      recipientEncryptionJwk,
-      signCompactJws: async (claims: Record<string, unknown>) =>
-        this.wallet!.signCompactJws(walletContext, {
-          header: {
-            typ: 'application/didcomm-signed+json',
-            alg: 'ES384',
-            ...(signingJwk?.kid ? { kid: signingJwk.kid } : {}),
-          },
-          claims,
-        }),
-      encryptCompactJwe: async (compactJws: string, recipientJwk: unknown) =>
-        this.wallet!.buildCompactJwe(walletContext, {
-          plaintext: compactJws,
-          recipientJwk: recipientJwk as PublicJwk,
-          contentType: 'JWS',
-        }),
-      fetcher: (requestUrl: string, init: DidcommFetchInit) => this.fetchWithPolicy(requestUrl, init, payload),
-    });
-    return { status: result.status, location: result.location, body: result.body };
+    return this.httpRuntime.submitBatchEncrypted(path, payload, recipientEncryptionJwk, walletContext);
   }
 
   /**
@@ -1348,13 +503,7 @@ export class DataspaceNodeClient {
    * Content-Type: `application/json`.
    */
   public async postJson(path: string, payload: unknown): Promise<SubmitResponse> {
-    const response = await this.doPost(path, payload, 'application/json');
-    const body = await this.parseResponseBody(response);
-    return {
-      status: response.status,
-      location: response.headers.get('location') ?? undefined,
-      body,
-    };
+    return this.httpRuntime.postJson(path, payload);
   }
 
   /**
@@ -1362,7 +511,7 @@ export class DataspaceNodeClient {
    * Keeps JSON flows explicit and semantically separated from DIDComm bundle flows.
    */
   public async submitLegacyJson(path: string, payload: unknown): Promise<SubmitResponse> {
-    return this.postJson(path, payload);
+    return this.httpRuntime.submitLegacyJson(path, payload);
   }
 
   /**
@@ -1370,28 +519,7 @@ export class DataspaceNodeClient {
    * Use for file upload endpoints. Prefer `uploadConversionFile` for DataConversion uploads.
    */
   public async postFormData(path: string, formData: FormData): Promise<SubmitResponse> {
-    const url = `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
-    const headers: Record<string, string> = {
-      ...this.defaultHeaders,
-      Accept: 'application/json, application/didcomm-plaintext+json, application/x-www-form-urlencoded, */*',
-    };
-
-    if (this.bearerToken) {
-      headers.Authorization = `Bearer ${this.bearerToken}`;
-    }
-
-    const response = await fetch(url, {
-      method: 'POST',
-      headers,
-      body: formData,
-    });
-
-    const body = await this.parseResponseBody(response);
-    return {
-      status: response.status,
-      location: response.headers.get('location') ?? undefined,
-      body,
-    };
+    return this.httpRuntime.postFormData(path, formData);
   }
 
   /**
@@ -1411,19 +539,7 @@ export class DataspaceNodeClient {
     fileFieldName?: string;
     fields?: Record<string, string>;
   }): Promise<SubmitResponse> {
-    const form = new FormData();
-    const fileFieldName = params.fileFieldName ?? 'file';
-    const content =
-      params.fileContent instanceof Blob
-        ? params.fileContent
-        : new Blob([params.fileContent as BlobPart]);
-    form.append(fileFieldName, content, params.fileName);
-
-    for (const [key, value] of Object.entries(params.fields ?? {})) {
-      form.append(key, value);
-    }
-
-    return this.postFormData(params.path, form);
+    return this.httpRuntime.uploadConversionFile(params);
   }
 
   /**
@@ -1435,12 +551,7 @@ export class DataspaceNodeClient {
     path: string,
     request: AsyncPollRequest,
   ): Promise<{ status: number; body: unknown; retryAfterMs?: number }> {
-    const response = await this.doPost(path, request, 'application/json');
-    return {
-      status: response.status,
-      body: await this.parseResponseBody(response),
-      retryAfterMs: parseRetryAfterMs(response.headers.get('retry-after')),
-    };
+    return this.httpRuntime.pollBatchResponse(path, request);
   }
 
   /**
@@ -1465,15 +576,7 @@ export class DataspaceNodeClient {
     payload: { thid?: string } & Record<string, unknown>,
     options?: PollOptions,
   ): Promise<SubmitAndPollResult> {
-    const submit = await this.submitBatch(submitPath, payload);
-
-    const thid = String(payload.thid || '').trim();
-    if (!thid) {
-      throw new Error('submitAndPoll requires payload.thid.');
-    }
-
-    const poll = await this.pollUntilComplete(pollPath, { thid }, options);
-    return { submit, poll };
+    return this.httpRuntime.submitAndPoll(submitPath, pollPath, payload, options);
   }
 
   /**
@@ -1573,9 +676,7 @@ export class DataspaceNodeClient {
   }
 
   /** Endpoint path for medication overlap pre-check (planned GW contract). */
-  public individualMedicationOverlapCheckPath(ctx: RouteContext): string {
-    return this.v1Path(ctx, 'individual', 'org.hl7.fhir.api', 'MedicationStatement', '_overlap-check');
-  }
+  public individualMedicationOverlapCheckPath(ctx: RouteContext): string { return this.paths.individualMedicationOverlapCheckPath(ctx); }
 
   /**
    * Pre-create overlap check for medication intake schedules.
@@ -1864,40 +965,20 @@ export class DataspaceNodeClient {
   public async confirmLegalOrganizationOrderSimple(
     input: LegalOrganizationOrderSimpleInput,
   ): Promise<SubmitAndPollResult> {
-    if (!String(input.offerId || '').trim()) {
-      throw new Error('confirmLegalOrganizationOrderSimple requires offerId.');
-    }
-    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
     const hostCtx = this.requireHostRouteContext(
       input.jurisdiction && input.sector
         ? { jurisdiction: input.jurisdiction, sector: input.sector }
         : undefined,
     );
-
-    const claims: Record<string, unknown> = {
-      '@context': 'org.schema',
-      'Order.acceptedOffer.identifier': input.offerId,
-      ...(input.additionalClaims || {}),
-    };
-    const payload = createDidcommPlainMessage({
-      iss: 'did:web:controller.example.com',
-      aud: 'did:web:host.example.com',
-      thid: `order-${randomUUID()}`,
-      body: {
-        data: [{
-          type: input.dataType || 'Organization-order-request-v1.0',
-          meta: { claims }, // deprecated compatibility
-          resource: { meta: { claims } },
-        }],
-      },
+    const order = await confirmLegalOrganizationOrderSimpleWithDeps({
+      input,
+      hostCtx,
+      defaultTimeoutMs: this.defaultTimeoutMs,
+      defaultIntervalMs: this.defaultIntervalMs,
+      hostRegistryOrderBatchPath: (ctx) => this.hostRegistryOrderBatchPath(ctx),
+      hostRegistryOrderPollPath: (ctx) => this.hostRegistryOrderPollPath(ctx),
+      submitAndPoll: this.submitAndPoll.bind(this),
     });
-
-    const order = await this.submitAndPoll(
-      this.hostRegistryOrderBatchPath(hostCtx),
-      this.hostRegistryOrderPollPath(hostCtx),
-      payload,
-      pollOptions,
-    );
     this.assertFirstDidcommEntrySuccess(order, 'confirmLegalOrganizationOrderSimple');
     return order;
   }
@@ -1915,13 +996,7 @@ export class DataspaceNodeClient {
   public getDidcommMessageBodyFromResponse(
     result: SubmitAndPollResult | PollResult | unknown,
   ): Record<string, unknown> | undefined {
-    const pollBody = (result as any)?.poll?.body ?? (result as any)?.body ?? result;
-    const didcommBody = (pollBody as any)?.body;
-    if (didcommBody && typeof didcommBody === 'object') return didcommBody as Record<string, unknown>;
-    if (pollBody && typeof pollBody === 'object' && Array.isArray((pollBody as any)?.data)) {
-      return pollBody as Record<string, unknown>;
-    }
-    return undefined;
+    return this.responseHelpers.getDidcommMessageBodyFromResponse(result);
   }
 
   /**
@@ -1930,9 +1005,7 @@ export class DataspaceNodeClient {
   public getFirstDidcommDataEntryFromResponse(
     result: SubmitAndPollResult | PollResult | unknown,
   ): Record<string, unknown> | undefined {
-    const body = this.getDidcommMessageBodyFromResponse(result);
-    const entry = (body as any)?.data?.[0];
-    return entry && typeof entry === 'object' ? (entry as Record<string, unknown>) : undefined;
+    return this.responseHelpers.getFirstDidcommDataEntryFromResponse(result);
   }
 
   /**
@@ -1941,43 +1014,21 @@ export class DataspaceNodeClient {
    * This helper normalizes canonical and legacy claim locations.
    */
   public getOfferIdFromResponse(result: SubmitAndPollResult | PollResult | unknown): string | undefined {
-    const entry = this.getFirstDidcommDataEntryFromResponse(result);
-    const offerId = String(
-      (entry as any)?.resource?.meta?.claims?.[ClaimsOfferSchemaorg.identifier]
-      || (entry as any)?.meta?.claims?.[ClaimsOfferSchemaorg.identifier]
-      || '',
-    ).trim();
-    return offerId || undefined;
+    return this.responseHelpers.getOfferIdFromResponse(result);
   }
 
   /**
    * Extract a UI-ready Offer preview from activation/registration responses.
    */
   public getOfferPreviewFromResponse(result: SubmitAndPollResult | PollResult | unknown): OfferPreview {
-    const entry = this.getFirstDidcommDataEntryFromResponse(result) as any;
-    const claims = entry?.resource?.meta?.claims || entry?.meta?.claims || {};
-    const seatsRaw = claims[ClaimsOfferSchemaorg.eligibleQuantityValue];
-    const seats =
-      typeof seatsRaw === 'number'
-        ? seatsRaw
-        : (typeof seatsRaw === 'string' && seatsRaw.trim() ? Number(seatsRaw) : undefined);
-    return {
-      offerId: this.getOfferIdFromResponse(result),
-      amount: claims[ClaimsOfferSchemaorg.price],
-      currency: claims[ClaimsOfferSchemaorg.priceCurrency],
-      seats: Number.isFinite(seats as number) ? seats : undefined,
-      planName: claims[ClaimsOfferSchemaorg.itemOfferedName],
-      sku: claims[ClaimsOfferSchemaorg.itemOfferedSku],
-      paymentMethod: claims[ClaimsOfferSchemaorg.acceptedPaymentMethod],
-      checkoutUrl: claims[ClaimsOfferSchemaorg.checkoutPageURLTemplate],
-    };
+    return this.responseHelpers.getOfferPreviewFromResponse(result);
   }
 
   /**
    * Alias of `getOfferPreviewFromResponse` with business naming.
    */
   public getOfferInfoFromResponse(result: SubmitAndPollResult | PollResult | unknown): OfferInfo {
-    return this.getOfferPreviewFromResponse(result);
+    return this.responseHelpers.getOfferInfoFromResponse(result);
   }
 
   /**
@@ -1985,20 +1036,7 @@ export class DataspaceNodeClient {
    * Supports common response shapes used in onboarding and license issuance flows.
    */
   public getActivationCodeFromResponse(result: SubmitAndPollResult | PollResult | unknown): string | undefined {
-    const root = (result as any)?.poll?.body || (result as any)?.body || {};
-    const byBody =
-      String(root?.activationCode || root?.body?.activationCode || '').trim();
-    if (byBody) return byBody;
-
-    const entry = this.getFirstDidcommDataEntryFromResponse(result) as any;
-    const claims = entry?.resource?.meta?.claims || entry?.meta?.claims || {};
-    const byClaims = String(
-      claims['org.schema.IndividualProduct.serialNumber']
-      || claims['org.schema.Offer.serialNumber']
-      || claims['activationCode']
-      || '',
-    ).trim();
-    return byClaims || undefined;
+    return this.responseHelpers.getActivationCodeFromResponse(result);
   }
 
   /**
@@ -2008,20 +1046,7 @@ export class DataspaceNodeClient {
     result: SubmitAndPollResult | PollResult | unknown,
     contextLabel: string,
   ): void {
-    const entry = this.getFirstDidcommDataEntryFromResponse(result) as any;
-    const responseStatusRaw = entry?.response?.status;
-    const responseStatus = Number(responseStatusRaw);
-    if (!Number.isFinite(responseStatus) || responseStatus < 400) return;
-
-    const diagnostics =
-      String(
-        entry?.response?.outcome?.issue?.[0]?.diagnostics
-        || entry?.response?.outcome?.issue?.[0]?.details?.text
-        || '',
-      ).trim();
-    throw new Error(
-      `${contextLabel} failed (business status=${responseStatus})${diagnostics ? `: ${diagnostics}` : ''}`,
-    );
+    return this.responseHelpers.assertFirstDidcommEntrySuccess(result, contextLabel);
   }
 
   /**
@@ -2034,57 +1059,24 @@ export class DataspaceNodeClient {
     ctx: RouteContext | undefined,
     input: EmployeeDeviceActivationInput,
   ): Promise<EmployeeDeviceActivationResult> {
-    const exchangePayload = {
-      thid: `exchange-${randomUUID()}`,
-      subject_token: input.activationCode,
-    };
-
-    const exchangeClient = new DataspaceNodeClient({
-      baseUrl: this.baseUrl,
-      bearerToken: input.idToken,
-      defaultHeaders: this.defaultHeaders,
-      wallet: this.wallet,
+    const routeCtx = this.requireRouteContext(ctx);
+    return activateEmployeeDeviceWithActivationCodeWithDeps({
+      routeCtx,
+      input,
+      identityTokenExchangePath: (resolvedCtx) => this.identityTokenExchangePath(resolvedCtx),
+      identityTokenExchangePollPath: (resolvedCtx) => this.identityTokenExchangePollPath(resolvedCtx),
+      identityDeviceDcrPath: (resolvedCtx) => this.identityDeviceDcrPath(resolvedCtx),
+      identityDeviceDcrPollPath: (resolvedCtx) => this.identityDeviceDcrPollPath(resolvedCtx),
+      submitAndPollWithBearerToken: (bearerToken, submitPath, pollPath, payload, pollOptions) => {
+        const scopedClient = new DataspaceNodeClient({
+          baseUrl: this.baseUrl,
+          bearerToken,
+          defaultHeaders: this.defaultHeaders,
+          wallet: this.wallet,
+        });
+        return scopedClient.submitAndPoll(submitPath, pollPath, payload, pollOptions);
+      },
     });
-
-    const exchange = await exchangeClient.submitAndPoll(
-      this.identityTokenExchangePath(ctx),
-      this.identityTokenExchangePollPath(ctx),
-      exchangePayload,
-      input.pollOptions,
-    );
-
-    const exchangeBody = (exchange.poll.body as any)?.body || (exchange.poll.body as any) || {};
-    const initialAccessToken = String(
-      exchangeBody.initial_access_token || exchangeBody.access_token || '',
-    ).trim();
-    if (!initialAccessToken) {
-      throw new Error('activateEmployeeDeviceWithActivationCode: missing initial_access_token in exchange response.');
-    }
-
-    const dcrPayload = {
-      thid: `dcr-${randomUUID()}`,
-      ...input.dcrPayload,
-    };
-
-    const dcrClient = new DataspaceNodeClient({
-      baseUrl: this.baseUrl,
-      bearerToken: initialAccessToken,
-      defaultHeaders: this.defaultHeaders,
-      wallet: this.wallet,
-    });
-
-    const dcr = await dcrClient.submitAndPoll(
-      this.identityDeviceDcrPath(ctx),
-      this.identityDeviceDcrPollPath(ctx),
-      dcrPayload,
-      input.pollOptions,
-    );
-
-    return {
-      initialAccessToken,
-      exchange,
-      dcr,
-    };
   }
 
   /**
@@ -2099,17 +1091,13 @@ export class DataspaceNodeClient {
         ? { tenantId: input.tenantId, jurisdiction: input.jurisdiction, sector: input.sector }
         : undefined,
     );
-    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
-
-    return this.activateEmployeeDeviceWithActivationCode(
+    return activateEmployeeDeviceWithActivationCodeSimpleWithDeps({
       routeCtx,
-      {
-        activationCode: input.activationCode,
-        idToken: input.idToken,
-        dcrPayload: input.dcrPayload,
-        pollOptions,
-      },
-    );
+      input,
+      defaultTimeoutMs: this.defaultTimeoutMs,
+      defaultIntervalMs: this.defaultIntervalMs,
+      activateEmployeeDeviceWithActivationCode: this.activateEmployeeDeviceWithActivationCode.bind(this),
+    });
   }
 
   /**
@@ -2121,32 +1109,16 @@ export class DataspaceNodeClient {
     options?: PollOptions,
   ): Promise<SubmitAndPollResult> {
     const routeCtx = this.requireRouteContext(ctx);
-    const payload = createDidcommPlainMessage({
-      iss: routeCtx.tenantId,
-      aud: routeCtx.tenantId,
-      thid: `employee-${randomUUID()}`,
-      body: {
-        data: [
-          {
-            type: input.dataType || 'Employee-create-request-v1.0',
-            request: { method: 'POST' },
-            meta: { claims: input.employeeClaims || {} }, // deprecated compatibility
-            resource: { meta: { claims: input.employeeClaims || {} } },
-          },
-        ],
-      },
+    return createOrganizationEmployeeWithDeps(routeCtx, input, options, {
+      employeeBatchPath: (resolvedCtx) => this.employeeBatchPath(resolvedCtx),
+      employeePollPath: (resolvedCtx) => this.employeePollPath(resolvedCtx),
+      submitAndPoll: this.submitAndPoll.bind(this),
     });
-
-    return this.submitAndPoll(
-      this.employeeBatchPath(routeCtx),
-      this.employeePollPath(routeCtx),
-      payload,
-      options,
-    );
   }
 
   /**
-   * UC 5.1 wrapper: bootstrap subject organization context via registration + optional order confirmation.
+   * Legacy generic helper: bootstrap subject organization context via registration + optional order confirmation.
+   * This is not the canonical production E2E contract; prefer explicit step-by-step runtime flows.
    */
   public async bootstrapSubjectOrganizationIndex(
     ctx: RouteContext | undefined,
@@ -2194,53 +1166,18 @@ export class DataspaceNodeClient {
         ? { tenantId: input.tenantId, jurisdiction: input.jurisdiction, sector: input.sector }
         : undefined,
     );
-    const alternateName = String(input.alternateName || '').trim();
-    if (!alternateName) {
-      throw new Error('bootstrapIndividualOrganizationSimple requires alternateName.');
-    }
-    const controllerEmail = String(input.controllerEmail || '').trim();
-    const controllerTelephone = String(input.controllerTelephone || '').trim();
-    if (!controllerEmail && !controllerTelephone) {
-      throw new Error('bootstrapIndividualOrganizationSimple requires controllerEmail or controllerTelephone.');
-    }
-    const controllerRole = String(input.controllerRole || 'RESPRSN').trim();
-
-    const claims: Record<string, unknown> = {
-      '@context': 'org.schema',
-      'org.schema.Organization.alternateName': alternateName,
-      'org.schema.Service.category': routeCtx.sector,
-      [ClaimsPersonSchemaorg.hasOccupation]: controllerRole,
-      ...(controllerEmail ? { [ClaimsPersonSchemaorg.email]: controllerEmail } : {}),
-      ...(controllerTelephone ? { [ClaimsPersonSchemaorg.telephone]: controllerTelephone } : {}),
-      ...(input.additionalClaims || {}),
-    };
-    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
-    const registrationPayload = createDidcommPlainMessage({
-      iss: routeCtx.tenantId,
-      aud: routeCtx.tenantId,
-      thid: `family-org-${randomUUID()}`,
-      body: {
-        data: [{
-          type: 'SubjectOrg-registration-form-v1.0',
-          meta: { claims },
-          resource: { meta: { claims } },
-        }],
-      },
+    return startIndividualOrganizationSimpleWithDeps({
+      input,
+      routeCtx,
+      defaultTimeoutMs: this.defaultTimeoutMs,
+      defaultIntervalMs: this.defaultIntervalMs,
+      individualFamilyOrganizationBatchPath: (ctx) => this.individualFamilyOrganizationBatchPath(ctx),
+      individualFamilyOrganizationPollPath: (ctx) => this.individualFamilyOrganizationPollPath(ctx),
+      submitAndPoll: this.submitAndPoll.bind(this),
+      assertFirstDidcommEntrySuccess: this.assertFirstDidcommEntrySuccess.bind(this),
+      getOfferIdFromResponse: this.getOfferIdFromResponse.bind(this),
+      getOfferPreviewFromResponse: this.getOfferPreviewFromResponse.bind(this),
     });
-
-    const registration = await this.submitAndPoll(
-      this.individualFamilyOrganizationBatchPath(routeCtx),
-      this.individualFamilyOrganizationPollPath(routeCtx),
-      registrationPayload,
-      pollOptions,
-    );
-    this.assertFirstDidcommEntrySuccess(registration, 'startIndividualOrganizationSimple.registration');
-
-    const offerId = this.getOfferIdFromResponse(registration);
-    if (!offerId) {
-      throw new Error('startIndividualOrganizationSimple failed: missing offerId in registration response.');
-    }
-    return { registration, offerId, offerPreview: this.getOfferPreviewFromResponse(registration) };
   }
 
   /**
@@ -2254,41 +1191,24 @@ export class DataspaceNodeClient {
         ? { tenantId: input.tenantId, jurisdiction: input.jurisdiction, sector: input.sector }
         : undefined,
     );
-    const offerId = String(input.offerId || '').trim();
-    if (!offerId) {
-      throw new Error('confirmIndividualOrganizationOrderSimple requires offerId.');
-    }
-    const pollOptions = this.resolveSimplePollOptions(input.timeoutSeconds, input.intervalSeconds);
-    const orderClaims: Record<string, unknown> = {
-      '@context': 'org.schema',
-      'Order.acceptedOffer.identifier': offerId,
-    };
-    const confirmationPayload = createDidcommPlainMessage({
-      iss: routeCtx.tenantId,
-      aud: routeCtx.tenantId,
-      thid: `family-order-${randomUUID()}`,
-      body: {
-        data: [{
-          type: 'Family-order-request-v1.0',
-          meta: { claims: orderClaims },
-          resource: { meta: { claims: orderClaims } },
-        }],
-      },
+    const confirmation = await confirmIndividualOrganizationOrderSimpleWithDeps({
+      input,
+      routeCtx,
+      defaultTimeoutMs: this.defaultTimeoutMs,
+      defaultIntervalMs: this.defaultIntervalMs,
+      individualFamilyOrderBatchPath: (ctx) => this.individualFamilyOrderBatchPath(ctx),
+      individualFamilyOrderPollPath: (ctx) => this.individualFamilyOrderPollPath(ctx),
+      submitAndPoll: this.submitAndPoll.bind(this),
     });
-
-    const confirmation = await this.submitAndPoll(
-      this.individualFamilyOrderBatchPath(routeCtx),
-      this.individualFamilyOrderPollPath(routeCtx),
-      confirmationPayload,
-      pollOptions,
-    );
     this.assertFirstDidcommEntrySuccess(confirmation, 'confirmIndividualOrganizationOrderSimple');
     return confirmation;
   }
 
   /**
-   * Friendly wrapper (provisional): register + auto-confirm individual order.
-   * Prefer `startIndividualOrganizationSimple` + `confirmIndividualOrganizationOrderSimple`.
+   * @deprecated Legacy compatibility helper for zero-price/demo/test composition only.
+   * Not a real production onboarding contract.
+   * Prefer explicit `startIndividualOrganizationSimple` + user-visible offer acceptance
+   * + `confirmIndividualOrganizationOrderSimple`.
    */
   public async bootstrapIndividualOrganizationSimple(
     input: IndividualOrganizationBootstrapSimpleInput,
@@ -2317,19 +1237,11 @@ export class DataspaceNodeClient {
     input: IpsOrFhirImportInput,
   ): Promise<SubmitAndPollResult> {
     const routeCtx = this.requireRouteContext(ctx);
-    const payload = {
-      thid: input.compositionPayload.thid || `composition-${randomUUID()}`,
-      ...input.compositionPayload,
-    };
-
-    const submitPath = (input.format || 'r4') === 'api'
-      ? this.individualCompositionR4BatchPath(routeCtx).replace('/org.hl7.fhir.r4/', '/org.hl7.fhir.api/')
-      : this.individualCompositionR4BatchPath(routeCtx);
-    const pollPath = (input.format || 'r4') === 'api'
-      ? this.individualCompositionR4PollPath(routeCtx).replace('/org.hl7.fhir.r4/', '/org.hl7.fhir.api/')
-      : this.individualCompositionR4PollPath(routeCtx);
-
-    return this.submitAndPoll(submitPath, pollPath, payload, input.pollOptions);
+    return importIpsOrFhirAndUpdateIndexWithDeps(routeCtx, input, {
+      individualCompositionR4BatchPath: (resolvedCtx) => this.individualCompositionR4BatchPath(resolvedCtx),
+      individualCompositionR4PollPath: (resolvedCtx) => this.individualCompositionR4PollPath(resolvedCtx),
+      submitAndPoll: this.submitAndPoll.bind(this),
+    });
   }
 
   /**
@@ -2340,16 +1252,11 @@ export class DataspaceNodeClient {
     input: RelatedPersonUpsertInput,
   ): Promise<SubmitAndPollResult> {
     const routeCtx = this.requireRouteContext(ctx);
-    const payload = {
-      thid: input.relatedPersonPayload.thid || `relatedperson-${randomUUID()}`,
-      ...input.relatedPersonPayload,
-    };
-    return this.submitAndPoll(
-      this.individualRelatedPersonBatchPath(routeCtx),
-      this.individualRelatedPersonPollPath(routeCtx),
-      payload,
-      input.pollOptions,
-    );
+    return upsertRelatedPersonAndPollWithDeps(routeCtx, input, {
+      individualRelatedPersonBatchPath: (resolvedCtx) => this.individualRelatedPersonBatchPath(resolvedCtx),
+      individualRelatedPersonPollPath: (resolvedCtx) => this.individualRelatedPersonPollPath(resolvedCtx),
+      submitAndPoll: this.submitAndPoll.bind(this),
+    });
   }
 
   /**
@@ -2362,20 +1269,12 @@ export class DataspaceNodeClient {
     input: CommunicationIngestionInput,
   ): Promise<SubmitAndPollResult> {
     const routeCtx = this.requireRouteContext(ctx);
-    const payload = {
-      thid: input.communicationPayload.thid || `communication-${randomUUID()}`,
-      ...input.communicationPayload,
-    };
-    const pathFormatSegment = normalizeCommunicationPathFormatSegment(input.pathFormatSegment);
-    const convertedPayload = pathFormatSegment === 'org.hl7.fhir.r4'
-      ? maybeConvertCommunicationClaimsToFhirR4Payload(payload, input.autoConvertClaimsToFhirR4 !== false)
-      : payload;
-    return this.submitAndPoll(
-      this.individualCommunicationBatchPath(routeCtx, pathFormatSegment),
-      this.individualCommunicationPollPath(routeCtx, pathFormatSegment),
-      convertedPayload,
-      input.pollOptions,
-    );
+    return ingestCommunicationAndUpdateIndexWithDeps(routeCtx, input, {
+      individualCommunicationBatchPath: (resolvedCtx, pathFormatSegment) => this.individualCommunicationBatchPath(resolvedCtx, pathFormatSegment),
+      individualCommunicationPollPath: (resolvedCtx, pathFormatSegment) => this.individualCommunicationPollPath(resolvedCtx, pathFormatSegment),
+      transformPayloadForFhirR4: maybeConvertCommunicationClaimsToFhirR4Payload,
+      submitAndPoll: this.submitAndPoll.bind(this),
+    });
   }
 
   /**
@@ -2387,54 +1286,12 @@ export class DataspaceNodeClient {
     input: GrantProfessionalAccessSimpleInput,
   ): Promise<GrantProfessionalAccessSimpleResult> {
     const routeCtx = this.requireRouteContext(ctx);
-    const built = buildConsentClaimsSimpleWithCid(
-      {
-        subjectDid: input.subjectDid,
-        subjectPhone: input.subjectPhone,
-        subjectGivenName: input.subjectGivenName,
-        actor: input.actor || {},
-        actorRole: input.actorRole,
-        purpose: input.purpose,
-        actions: input.actions,
-        consentIdentifier: input.consentIdentifier,
-        consentDate: input.consentDate,
-        decision: input.decision,
-        attachmentContentType: input.attachmentContentType,
-        attachmentBase64: input.attachmentBase64,
-      },
-      {
-        consentIdentifierFactory: () => `urn:uuid:${randomUUID()}`,
-      },
-    );
-
-    const thid = `consent-${randomUUID()}`;
-    const consentPayload = {
-      thid,
-      body: {
-        data: [
-          {
-            type: input.dataType || 'Consent-grant-request-v1.0',
-            meta: { claims: built.consentClaims }, // deprecated compatibility
-            resource: { resourceType: 'Consent', meta: { claims: built.consentClaims } },
-          },
-        ],
-      },
-    };
-    const consent = await this.submitAndPoll(
-      this.individualConsentR4BatchPath(routeCtx),
-      this.individualConsentR4PollPath(routeCtx),
-      consentPayload,
-      input.pollOptions,
-    );
-
-    return {
-      thid,
-      consent,
-      actorIdentifier: built.actorIdentifier,
-      subjectIdentifier: built.subjectIdentifier,
-      consentClaims: built.consentClaims,
-      claimsCid: built.claimsCid,
-    };
+    return grantProfessionalAccessSimpleWithDeps(routeCtx, input, {
+      buildConsentClaimsSimpleWithCid: buildConsentClaimsSimpleWithCid as any,
+      individualConsentR4BatchPath: (resolvedCtx) => this.individualConsentR4BatchPath(resolvedCtx),
+      individualConsentR4PollPath: (resolvedCtx) => this.individualConsentR4PollPath(resolvedCtx),
+      submitAndPoll: this.submitAndPoll.bind(this),
+    });
   }
 
   /**
@@ -2445,19 +1302,13 @@ export class DataspaceNodeClient {
     input: DigitalTwinGenerationInput,
   ): Promise<SubmitAndPollResult> {
     const routeCtx = this.requireRouteContext(ctx);
-    const payload = {
-      thid: input.compositionPayload.thid || `digital-twin-${randomUUID()}`,
-      ...input.compositionPayload,
-    };
-
-    const submitPath = (input.format || 'r4') === 'api'
-      ? this.digitalTwinCompositionApiBatchPath(routeCtx)
-      : this.digitalTwinCompositionR4BatchPath(routeCtx);
-    const pollPath = (input.format || 'r4') === 'api'
-      ? this.digitalTwinCompositionApiPollPath(routeCtx)
-      : this.digitalTwinCompositionR4PollPath(routeCtx);
-
-    return this.submitAndPoll(submitPath, pollPath, payload, input.pollOptions);
+    return generateDigitalTwinFromSubjectDataWithDeps(routeCtx, input, {
+      digitalTwinCompositionApiBatchPath: (resolvedCtx) => this.digitalTwinCompositionApiBatchPath(resolvedCtx),
+      digitalTwinCompositionApiPollPath: (resolvedCtx) => this.digitalTwinCompositionApiPollPath(resolvedCtx),
+      digitalTwinCompositionR4BatchPath: (resolvedCtx) => this.digitalTwinCompositionR4BatchPath(resolvedCtx),
+      digitalTwinCompositionR4PollPath: (resolvedCtx) => this.digitalTwinCompositionR4PollPath(resolvedCtx),
+      submitAndPoll: this.submitAndPoll.bind(this),
+    });
   }
 
   /**
@@ -2470,333 +1321,7 @@ export class DataspaceNodeClient {
    * @param options - `timeoutMs` (default 60000) and `intervalMs` (default 2000).
    */
   public async pollUntilComplete(path: string, request: AsyncPollRequest, options?: PollOptions): Promise<PollResult> {
-    const timeoutMs = options?.timeoutMs ?? 60_000;
-    const intervalMs = options?.intervalMs ?? 2_000;
-    const startedAt = Date.now();
-    let attempts = 0;
-
-    while (true) {
-      attempts += 1;
-      const result = await this.pollBatchResponse(path, request);
-
-      if (result.status !== 202) {
-        return {
-          status: result.status,
-          body: result.body,
-          attempts,
-        };
-      }
-
-      if (Date.now() - startedAt > timeoutMs) {
-        throw new Error(`Polling timeout after ${attempts} attempts (${timeoutMs}ms).`);
-      }
-
-      const waitMs = options?.intervalMs ?? result.retryAfterMs ?? intervalMs;
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
+    return this.httpRuntime.pollUntilComplete(path, request, options);
   }
 
-  // ---- Internal HTTP helpers ---------------------------------------------
-
-  private async fetchWithPolicy(url: string, init: RequestInit, payload?: unknown): Promise<Response> {
-    const attempts = Math.max(1, this.requestRetries + 1);
-    let lastError: unknown;
-
-    for (let attempt = 1; attempt <= attempts; attempt += 1) {
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), this.requestTimeoutMs);
-      try {
-        this.traceHttp('request', {
-          attempt,
-          method: String(init.method || 'GET').toUpperCase(),
-          url,
-          headers: init.headers,
-          payload,
-        });
-        const response = await fetch(url, { ...init, signal: controller.signal });
-        clearTimeout(timeout);
-        const responseBodyRaw = await response.clone().text();
-        this.traceHttp('response', {
-          attempt,
-          method: String(init.method || 'GET').toUpperCase(),
-          url,
-          status: response.status,
-          ok: response.ok,
-          bodyRaw: responseBodyRaw,
-        });
-        if (response.status >= 500 && attempt < attempts) {
-          this.traceHttp('retry', {
-            attempt,
-            reason: `http_${response.status}`,
-            url,
-          });
-          await sleep(50);
-          continue;
-        }
-        return response;
-      } catch (error) {
-        clearTimeout(timeout);
-        lastError = error;
-        this.traceHttp('error', {
-          attempt,
-          method: String(init.method || 'GET').toUpperCase(),
-          url,
-          error: error instanceof Error ? error.message : String(error),
-        });
-        if (attempt < attempts && isRetryableTransportError(error)) {
-          this.traceHttp('retry', {
-            attempt,
-            reason: 'transport_error',
-            url,
-          });
-          await sleep(50);
-          continue;
-        }
-        break;
-      }
-    }
-
-    if (this.allowDemoFallback && isRetryableTransportError(lastError)) {
-      const fallback = this.buildDemoFallbackResponse(url, init, payload);
-      console.warn(`[dataspace-client-sdk-node] demo fallback for ${url}: backend unavailable, returning synthetic example data.`);
-      return fallback;
-    }
-
-    throw lastError instanceof Error ? lastError : new Error(`Request failed for ${url}`);
-  }
-
-  private buildDemoFallbackResponse(url: string, init: RequestInit, payload?: unknown): Response {
-    const pathname = new URL(url).pathname;
-    const body = this.buildDemoFallbackBody(pathname, payload);
-    return jsonResponse(body, this.buildDemoFallbackStatus(pathname, init));
-  }
-
-  private buildDemoFallbackStatus(pathname: string, init: RequestInit): number {
-    if (pathname.endsWith('/_batch') || pathname.endsWith('/_activate') || pathname.endsWith('/_exchange') || pathname.endsWith('/_dcr') || pathname.endsWith('/_code') || pathname.endsWith('/_token') || pathname.endsWith('/token')) {
-      return 202;
-    }
-    if (pathname.endsWith('/_batch-response') || pathname.endsWith('/_activate-response') || pathname.endsWith('/_exchange-response') || pathname.endsWith('/_dcr-response') || pathname.endsWith('/_code-response') || pathname.endsWith('/_token-response') || pathname.endsWith('/token-response')) {
-      return 200;
-    }
-    return String(init.method || 'POST').toUpperCase() === 'POST' ? 200 : 200;
-  }
-
-  private buildDemoFallbackBody(pathname: string, payload?: unknown): unknown {
-    if (pathname.endsWith('/_batch-response') || pathname.endsWith('/_activate-response') || pathname.endsWith('/_exchange-response') || pathname.endsWith('/_dcr-response') || pathname.endsWith('/_code-response') || pathname.endsWith('/_token-response')) {
-      return this.buildDemoPollBody(pathname, payload);
-    }
-
-    const request = (payload ?? {}) as Record<string, unknown>;
-    const thid = String(request.thid || request['thid'] || '').trim();
-
-    if (pathname.endsWith('/_batch')) {
-      if (pathname.includes('/registry/org.schema/Organization/_batch')) {
-        this._demoJobs.set(thid || pathname, { kind: 'organization-batch', payload: request, path: pathname });
-      } else if (pathname.includes('/registry/org.schema/Order/_batch')) {
-        this._demoJobs.set(thid || pathname, { kind: 'order-batch', payload: request, path: pathname });
-      } else if (pathname.includes('/individual/org.schema/Consent/_batch') || pathname.includes('/individual/org.hl7.fhir.r4/Consent/_batch')) {
-        this._demoJobs.set(thid || pathname, { kind: 'consent-batch', payload: request, path: pathname });
-      } else if (pathname.includes('/organization/org.hl7.fhir.r4/Composition/_batch') || pathname.includes('/digitaltwin/org.hl7.fhir.r4/Composition/_batch')) {
-        this._demoJobs.set(thid || pathname, { kind: 'composition-batch', payload: request, path: pathname });
-      } else if (pathname.includes('/individual/org.schema/Organization/_batch')) {
-        this._demoJobs.set(thid || pathname, { kind: 'individual-organization-batch', payload: request, path: pathname });
-      }
-      return { accepted: true, demo: true, thid, path: pathname };
-    }
-
-    if (pathname.endsWith('/token')) {
-      this._demoJobs.set(thid || pathname, { kind: 'identity-openid-smart-token', payload: request, path: pathname });
-      return { accepted: true, demo: true, thid, path: pathname };
-    }
-
-    if (pathname.endsWith('/_activate')) {
-      this._demoJobs.set(thid || pathname, { kind: 'organization-activate', payload: request, path: pathname });
-      return { accepted: true, demo: true, thid, path: pathname };
-    }
-
-    if (pathname.endsWith('/_dcr')) {
-      this._demoJobs.set(thid || pathname, { kind: 'identity-dcr', payload: request, path: pathname });
-      return { accepted: true, demo: true, thid, path: pathname };
-    }
-
-    if (pathname.endsWith('/_code')) {
-      this._demoJobs.set(thid || pathname, { kind: 'identity-code', payload: request, path: pathname });
-      return { accepted: true, demo: true, thid, path: pathname };
-    }
-
-    if (pathname.endsWith('/_token')) {
-      this._demoJobs.set(thid || pathname, { kind: 'identity-smart-token', payload: request, path: pathname });
-      return { accepted: true, demo: true, thid, path: pathname };
-    }
-
-    if (pathname.endsWith('/_exchange')) {
-      this._demoJobs.set(thid || pathname, { kind: 'identity-exchange', payload: request, path: pathname });
-      return { accepted: true, demo: true, thid, path: pathname };
-    }
-
-    return { accepted: true, demo: true, thid, path: pathname };
-  }
-
-  private buildDemoPollBody(pathname: string, payload?: unknown): unknown {
-    const request = (payload ?? {}) as Record<string, unknown>;
-    const thid = String(request.thid || '').trim();
-    const job = this._demoJobs.get(thid) ?? Array.from(this._demoJobs.values()).reverse().find((entry) => entry.path.endsWith(pathname.replace(/.*\//, '')) || entry.path === pathname);
-
-    if (pathname.endsWith('/token-response') || pathname.endsWith('/_token-response')) {
-      if (pathname.endsWith('/token-response')) {
-        return {
-          status: 'COMPLETED',
-          access_token: 'demo-access-token-001',
-          token_type: 'Bearer',
-          scope: String((job?.payload as Record<string, unknown> | undefined)?.scope || `organization/Composition.rs?subject=did:web:demo:individual:001&section=${buildLoincToken('48765-2')}`).trim(),
-          expires_in: 3600,
-          demo: true,
-          thid,
-        };
-      }
-      return { status: 'COMPLETED', id_token: 'demo-id-token-001', demo: true, thid };
-    }
-
-    if (pathname.endsWith('/_code-response')) {
-      return { status: 'COMPLETED', code: 'demo-pkce-code-001', demo: true, thid };
-    }
-
-    if (pathname.endsWith('/_dcr-response')) {
-      return { status: 'COMPLETED', client_id: 'did:web:demo-device.example.com', demo: true, thid };
-    }
-
-    if (pathname.endsWith('/_exchange-response')) {
-      return {
-        status: 'COMPLETED',
-        access_token: 'demo-access-token-001',
-        token_type: 'Bearer',
-        scope: 'organization/Composition.rs',
-        expires_in: 3600,
-        demo: true,
-        thid,
-      };
-    }
-
-    if (pathname.endsWith('/_activate-response')) {
-      const data = [{ response: { status: 201 }, resource: { resourceType: 'Organization', id: 'demo-org-001' } }];
-      return {
-        status: 'COMPLETED',
-        body: {
-          body: { data },
-          data,
-          demo: true,
-          thid,
-        },
-      };
-    }
-
-    if (pathname.endsWith('/_batch-response')) {
-      const fallbackKind = pathname.includes('/Order/_batch-response')
-        ? 'order-batch'
-        : pathname.includes('/Consent/_batch-response')
-          ? 'consent-batch'
-          : pathname.includes('/Composition/_batch-response')
-            ? 'composition-batch'
-            : pathname.includes('/Organization/_batch-response')
-              ? 'organization-batch'
-              : undefined;
-      const effectiveKind = job?.kind || fallbackKind;
-
-      if (effectiveKind === 'organization-batch' || effectiveKind === 'individual-organization-batch') {
-        const data: any[] = [{ response: { status: 201 }, resource: { resourceType: 'Organization', id: 'demo-org-001' } }];
-        const claims = {
-          'org.schema.Offer.identifier': 'demo-offer-001',
-          'org.schema.FamilyRegistration.status': 'already_exists',
-        };
-        data[0].resource.meta = { claims };
-        data[0].meta = { claims };
-        return {
-          status: 'COMPLETED',
-          body: {
-            body: { data },
-            data,
-            demo: true,
-            thid,
-          },
-        };
-      }
-
-      if (effectiveKind === 'order-batch') {
-        const data = [{ response: { status: 201 }, resource: { resourceType: 'Order', id: 'demo-order-001' } }];
-        return {
-          status: 'COMPLETED',
-          body: {
-            body: { data },
-            data,
-            demo: true,
-            thid,
-          },
-        };
-      }
-
-      if (effectiveKind === 'consent-batch') {
-        const data = [{ response: { status: 201 }, resource: { resourceType: 'Consent', id: 'demo-consent-001' } }];
-        return {
-          status: 'COMPLETED',
-          body: {
-            body: { data },
-            data,
-            demo: true,
-            thid,
-          },
-        };
-      }
-
-      if (effectiveKind === 'composition-batch') {
-        const data = [{ response: { status: 201 }, resource: { resourceType: 'Composition', id: 'demo-composition-001' } }];
-        return {
-          status: 'COMPLETED',
-          body: {
-            body: { data },
-            data,
-            demo: true,
-            thid,
-          },
-        };
-      }
-    }
-
-    return { status: 'COMPLETED', body: { demo: true, thid } };
-  }
-
-  private async doPost(path: string, payload: unknown, contentType: string): Promise<Response> {
-    const url = /^https?:\/\//.test(path)
-      ? path
-      : `${this.baseUrl}${path.startsWith('/') ? path : `/${path}`}`;
-
-    const headers: Record<string, string> = {
-      ...this.defaultHeaders,
-      'Content-Type': contentType,
-      Accept: 'application/json, application/didcomm-plaintext+json, application/x-www-form-urlencoded, */*',
-    };
-
-    if (this.bearerToken) {
-      headers.Authorization = `Bearer ${this.bearerToken}`;
-    }
-
-    return this.fetchWithPolicy(url, {
-      method: 'POST',
-      headers,
-      body: JSON.stringify(payload),
-    }, payload);
-  }
-
-  private async parseResponseBody(response: Response): Promise<unknown> {
-    const contentType = response.headers.get('content-type') || '';
-    const raw = await response.text();
-    if (!raw) return {};
-    if (contentType.includes('application/json') || contentType.includes('application/didcomm-plaintext+json')) {
-      try {
-        return JSON.parse(raw);
-      } catch {
-        return {};
-      }
-    }
-    return raw;
-  }
 }

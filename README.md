@@ -1,5 +1,13 @@
 # dataspace-client-sdk-node
 
+Legacy archive (effective 2026-05-19). Target packages are `gdc-sdk-core-ts` and `gdc-sdk-node-ts`. See [LEGACY_STATUS.md](LEGACY_STATUS.md).
+
+Key docs:
+
+- [CHANGELOG.md](CHANGELOG.md)
+- [SECURITY.md](SECURITY.md)
+- [TEST_CORE.md](TEST_CORE.md)
+
 Node.js SDK to consume async endpoints and to implement distinct use cases.
 
 ## Non-Negotiable Conventions
@@ -57,6 +65,7 @@ npm test
 
 - Live Use Cases E2E: `npm run test:e2e:live-use-cases`
 - Backward-compatible alias: `npm run test:e2e:live-gw-uc5`
+- Core coverage summary for memory/thesis justification: [TEST_CORE.md](TEST_CORE.md)
 - The live tests skip by default in `npm test`; use env flags to enable them.
 - Full command details: [docs/01-globaldatacare-gw/testing/01_E2E_LOCAL_GW_UC5.md](docs/01-globaldatacare-gw/testing/01_E2E_LOCAL_GW_UC5.md)
 - Optional debug log: `LIVE_GW_E2E_DEBUG=1` writes sanitized traces to `test-results/`.
